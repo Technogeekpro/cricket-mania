@@ -67,6 +67,7 @@ export type Delivery = {
   ball_index: number;
   innings: number;
   striker_id: string | null;
+  non_striker_id: string | null;
   bowler_id: string | null;
   created_by: string | null;
   created_at: string;

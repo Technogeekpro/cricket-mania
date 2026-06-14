@@ -699,118 +699,41 @@ export function App() {
     if (!activeMatch || !session?.user || !isAdmin) {
       return;
     }
-    if (activeMatch.status === "completed") {
-      setNotice("This match is already complete.");
+
+    setBusy(true);
+    const { error } = await supabase.rpc("score_match_delivery", {
+      p_match_id: activeMatch.id,
+      p_runs: runs,
+      p_extra: options.extra ?? null,
+      p_wicket: Boolean(options.wicket),
+    });
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to update score."));
       return;
     }
 
-    const strikerId = activeMatch.striker_id;
-    const bowlerId = activeMatch.bowler_id;
-    if (!strikerId || !bowlerId) {
-      setNotice("Pick a striker and a bowler before scoring.");
+    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
+  }
+
+  async function undoLastDelivery() {
+    if (!activeMatch || !isAdmin) {
       return;
-    }
-
-    const striker = matchPlayers.find((item) => item.id === strikerId);
-    const bowler = matchPlayers.find((item) => item.id === bowlerId);
-    if (!striker || !bowler) {
-      setNotice("Striker or bowler is not part of this match.");
-      return;
-    }
-
-    const extra = options.extra;
-    const isWicket = Boolean(options.wicket);
-    const legal = extra !== "WD" && extra !== "NB";
-    const offBat = !extra;
-    const runValue = extra ? runs + 1 : runs;
-    const nextLegalBalls = activeMatch.legal_balls + (legal ? 1 : 0);
-    const nextWickets = activeMatch.wickets + (isWicket ? 1 : 0);
-    const nextRuns = activeMatch.runs + runValue;
-    const overComplete = legal && nextLegalBalls % 6 === 0;
-    const label = isWicket ? "W" : extra ? `${extra}${runs > 0 ? `+${runs}` : ""}` : String(runs);
-
-    // Batting credit: only off-the-bat runs count to the striker; B/LB still cost a ball faced.
-    const strikerUpdate: Partial<MatchPlayer> = {};
-    if (offBat) {
-      strikerUpdate.runs_scored = striker.runs_scored + runs;
-      strikerUpdate.balls_faced = striker.balls_faced + 1;
-      if (runs === 4) strikerUpdate.fours = striker.fours + 1;
-      if (runs === 6) strikerUpdate.sixes = striker.sixes + 1;
-    } else if (extra === "B" || extra === "LB") {
-      strikerUpdate.balls_faced = striker.balls_faced + 1;
-    }
-    if (isWicket) {
-      strikerUpdate.is_out = true;
-      strikerUpdate.dismissal = `b ${bowler.display_name}`;
-    }
-
-    // Bowler is charged for everything except byes / leg byes; ball counts only when legal.
-    const bowlerRuns = extra === "B" || extra === "LB" ? 0 : runValue;
-    const bowlerUpdate: Partial<MatchPlayer> = {
-      balls_bowled: bowler.balls_bowled + (legal ? 1 : 0),
-      runs_conceded: bowler.runs_conceded + bowlerRuns,
-      wickets_taken: bowler.wickets_taken + (isWicket ? 1 : 0),
-    };
-
-    // Strike rotation: swap on odd runs, then again at the end of an over.
-    let nextStriker: string | null = strikerId;
-    let nextNonStriker = activeMatch.non_striker_id;
-    if (!isWicket) {
-      const ranOdd = (offBat || extra === "B" || extra === "LB") && runs % 2 === 1;
-      let swap = ranOdd;
-      if (overComplete) swap = !swap;
-      if (swap && nextNonStriker) {
-        nextStriker = nextNonStriker;
-        nextNonStriker = strikerId;
-      }
-    } else {
-      // Dismissed batter leaves the crease; the umpire selects the replacement.
-      nextStriker = null;
     }
 
     setBusy(true);
-    const writes = await Promise.all([
-      supabase.from("deliveries").insert({
-        match_id: activeMatch.id,
-        label,
-        runs: runValue,
-        legal,
-        wicket: isWicket,
-        extra: extra ?? null,
-        ball_index: nextLegalBalls,
-        innings: activeMatch.current_innings,
-        striker_id: strikerId,
-        bowler_id: bowlerId,
-        created_by: session.user.id,
-      }),
-      supabase.from("match_players").update(strikerUpdate).eq("id", strikerId),
-      supabase.from("match_players").update(bowlerUpdate).eq("id", bowlerId),
-      supabase
-        .from("matches")
-        .update({
-          runs: nextRuns,
-          wickets: nextWickets,
-          legal_balls: nextLegalBalls,
-          status: "live",
-          striker_id: nextStriker,
-          non_striker_id: nextNonStriker,
-        })
-        .eq("id", activeMatch.id),
-    ]);
+    const { error } = await supabase.rpc("undo_last_match_delivery", {
+      p_match_id: activeMatch.id,
+    });
     setBusy(false);
 
-    const failed = writes.find((result) => result.error);
-    if (failed?.error) {
-      setNotice((failed.error as { message?: string }).message ?? "Unable to update score.");
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to undo last ball."));
       return;
     }
 
-    if (isWicket) {
-      setNotice("Wicket! Pick the next batter.");
-    } else if (overComplete && activeMatch.legal_balls + 1 < activeMatch.total_overs * 6) {
-      setNotice("Over complete. Choose the next bowler.");
-    }
-
+    setNotice("Last ball undone.");
     await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
   }
 
@@ -1177,6 +1100,7 @@ export function App() {
               deliveries={deliveries}
               matchPlayers={matchPlayers}
               onScore={scoreDelivery}
+              onUndo={undoLastDelivery}
               onReset={resetScore}
               onSetCrease={setCrease}
               onEndInnings={endInnings}
@@ -1838,6 +1762,7 @@ function UmpireView({
   deliveries,
   matchPlayers,
   onScore,
+  onUndo,
   onReset,
   onSetCrease,
   onEndInnings,
@@ -1849,6 +1774,7 @@ function UmpireView({
   deliveries: Delivery[];
   matchPlayers: MatchPlayer[];
   onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onUndo: () => void;
   onReset: () => void;
   onSetCrease: (values: CreaseValues) => void;
   onEndInnings: () => void;
@@ -1935,6 +1861,7 @@ function UmpireView({
           match={match}
           matchPlayers={matchPlayers}
           onScore={onScore}
+          onUndo={onUndo}
           onReset={onReset}
           onSetCrease={onSetCrease}
           onEndInnings={onEndInnings}
@@ -2108,6 +2035,7 @@ function LiveScoring({
   match,
   matchPlayers,
   onScore,
+  onUndo,
   onReset,
   onSetCrease,
   onEndInnings,
@@ -2116,6 +2044,7 @@ function LiveScoring({
   match: Match;
   matchPlayers: MatchPlayer[];
   onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onUndo: () => void;
   onReset: () => void;
   onSetCrease: (values: CreaseValues) => void;
   onEndInnings: () => void;
@@ -2129,15 +2058,23 @@ function LiveScoring({
   const oversDone = match.legal_balls >= totalBalls;
   const inningsOver = allOut || oversDone;
   const isChase = match.current_innings === 2 && match.target !== null;
+  const chaseWon = isChase && match.target !== null && match.runs >= match.target;
+  const canScore = creaseReady && !inningsOver && !chaseWon && match.status !== "completed";
 
   if (match.status === "completed") {
     return (
       <div className="scoring-complete">
         <p className="result-banner">{match.result_note ?? "Match complete."}</p>
-        <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
-          <RotateCcw size={18} />
-          Reset match
-        </button>
+        <div className="dual-actions">
+          <button className="secondary-action" disabled={busy} onClick={onUndo}>
+            <RotateCcw size={18} />
+            Undo ball
+          </button>
+          <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
+            <RotateCcw size={18} />
+            Reset match
+          </button>
+        </div>
       </div>
     );
   }
@@ -2222,25 +2159,25 @@ function LiveScoring({
 
           <div className="run-grid">
             {[0, 1, 2, 3, 4, 6].map((run) => (
-              <button key={run} disabled={busy || !creaseReady} onClick={() => onScore(run)}>
+              <button key={run} disabled={busy || !canScore} onClick={() => onScore(run)}>
                 {run}
               </button>
             ))}
           </div>
           <div className="extras-grid">
-            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "WD" })}>
+            <button disabled={busy || !canScore} onClick={() => onScore(0, { extra: "WD" })}>
               Wide
             </button>
-            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "NB" })}>
+            <button disabled={busy || !canScore} onClick={() => onScore(0, { extra: "NB" })}>
               No ball
             </button>
-            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "B" })}>
+            <button disabled={busy || !canScore} onClick={() => onScore(0, { extra: "B" })}>
               Bye
             </button>
-            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "LB" })}>
+            <button disabled={busy || !canScore} onClick={() => onScore(0, { extra: "LB" })}>
               Leg bye
             </button>
-            <button className="danger" disabled={busy || !creaseReady} onClick={() => onScore(0, { wicket: true })}>
+            <button className="danger" disabled={busy || !canScore} onClick={() => onScore(0, { wicket: true })}>
               Wicket
             </button>
           </div>
@@ -2258,6 +2195,10 @@ function LiveScoring({
         <button className={`secondary-action ${inningsOver ? "accent" : ""}`} disabled={busy} onClick={onEndInnings}>
           <Flag size={18} />
           {match.current_innings === 1 ? "End innings" : "End match"}
+        </button>
+        <button className="secondary-action" disabled={busy} onClick={onUndo}>
+          <RotateCcw size={18} />
+          Undo ball
         </button>
         <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
           <RotateCcw size={18} />
