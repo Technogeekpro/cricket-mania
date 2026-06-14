@@ -1,6 +1,6 @@
 import {
   Activity,
-  CheckCircle2,
+  Camera,
   ClipboardList,
   LogOut,
   Mail,
@@ -22,6 +22,8 @@ type ExtraType = "WD" | "NB" | "B" | "LB";
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
 const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
+const AVATAR_BUCKET = "profile-photos";
+const PENDING_AVATAR_KEY = "cricket-mania-pending-avatar-v1";
 
 const getAuthRedirectUrl = () => {
   if (typeof window === "undefined") {
@@ -37,6 +39,103 @@ const getAuthRedirectUrl = () => {
 };
 
 const getOvers = (legalBalls: number) => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+
+type PendingAvatar = {
+  email: string;
+  dataUrl: string;
+};
+
+const blobToDataUrl = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+const dataUrlToBlob = async (dataUrl: string) => {
+  const response = await fetch(dataUrl);
+  return response.blob();
+};
+
+const compressSquareAvatar = (file: File) =>
+  new Promise<Blob>((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("Please choose an image file."));
+      return;
+    }
+
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const side = Math.min(image.naturalWidth, image.naturalHeight);
+      const sx = (image.naturalWidth - side) / 2;
+      const sy = (image.naturalHeight - side) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = 512;
+      canvas.height = 512;
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        reject(new Error("Could not process this image."));
+        return;
+      }
+
+      context.drawImage(image, sx, sy, side, side, 0, 0, 512, 512);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error("Could not compress this image."));
+            return;
+          }
+          resolve(blob);
+        },
+        "image/webp",
+        0.82,
+      );
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Could not read this image."));
+    };
+
+    image.src = objectUrl;
+  });
+
+async function uploadAvatarBlob(userId: string, blob: Blob, oldPath?: string | null) {
+  const path = `${userId}/avatar-${Date.now()}.webp`;
+  const { error: uploadError } = await supabase.storage.from(AVATAR_BUCKET).upload(path, blob, {
+    contentType: "image/webp",
+    cacheControl: "31536000",
+    upsert: false,
+  });
+
+  if (uploadError) {
+    throw uploadError;
+  }
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  const publicUrl = `${data.publicUrl}?v=${Date.now()}`;
+  const { data: profile, error: updateError } = await supabase
+    .from("profiles")
+    .update({ avatar_url: publicUrl, avatar_path: path })
+    .eq("id", userId)
+    .select()
+    .single();
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  if (oldPath && oldPath !== path) {
+    await supabase.storage.from(AVATAR_BUCKET).remove([oldPath]);
+  }
+
+  return profile as Profile;
+}
 
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat("en-IN", {
@@ -140,7 +239,9 @@ export function App() {
         supabase.from("user_roles").select("*").eq("user_id", userId).maybeSingle(),
       ]);
 
-      setProfile(profileData ?? null);
+      let nextProfile = (profileData ?? null) as Profile | null;
+      nextProfile = await uploadPendingAvatarIfNeeded(userId, nextProfile);
+      setProfile(nextProfile);
       setRole(roleData?.role ?? "player");
 
       await loadMatches();
@@ -351,6 +452,47 @@ export function App() {
     await loadAdminLists();
   }
 
+  async function uploadPendingAvatarIfNeeded(userId: string, currentProfile: Profile | null) {
+    const saved = window.localStorage.getItem(PENDING_AVATAR_KEY);
+    if (!saved || !session?.user.email) {
+      return currentProfile;
+    }
+
+    try {
+      const pending = JSON.parse(saved) as PendingAvatar;
+      if (pending.email.toLowerCase() !== session.user.email.toLowerCase()) {
+        return currentProfile;
+      }
+
+      const blob = await dataUrlToBlob(pending.dataUrl);
+      const updatedProfile = await uploadAvatarBlob(userId, blob, currentProfile?.avatar_path);
+      window.localStorage.removeItem(PENDING_AVATAR_KEY);
+      setNotice("Profile photo saved.");
+      return updatedProfile;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to save pending profile photo.");
+      return currentProfile;
+    }
+  }
+
+  async function updateOwnAvatar(file: File) {
+    if (!session?.user) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const blob = await compressSquareAvatar(file);
+      const updatedProfile = await uploadAvatarBlob(session.user.id, blob, profile?.avatar_path);
+      setProfile(updatedProfile);
+      setNotice("Profile photo updated.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to update profile photo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (authLoading) {
     return (
       <main className="page-shell">
@@ -414,6 +556,8 @@ export function App() {
               role={role}
               match={activeMatch}
               deliveries={deliveries}
+              busy={busy}
+              onAvatarChange={updateOwnAvatar}
               onRefresh={() => session.user && loadAppData(session.user.id)}
             />
           )}
@@ -473,6 +617,8 @@ function AuthScreen() {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState("");
 
   async function submitAuth(formData: FormData) {
     const email = String(formData.get("email") ?? "").trim();
@@ -481,6 +627,18 @@ function AuthScreen() {
 
     setBusy(true);
     setMessage("");
+
+    let pendingAvatarDataUrl = "";
+    if (mode === "signup" && avatarFile) {
+      try {
+        const avatarBlob = await compressSquareAvatar(avatarFile);
+        pendingAvatarDataUrl = await blobToDataUrl(avatarBlob);
+      } catch (error) {
+        setBusy(false);
+        setMessage(error instanceof Error ? error.message : "Could not process profile photo.");
+        return;
+      }
+    }
 
     const result =
       mode === "signup"
@@ -501,7 +659,25 @@ function AuthScreen() {
       return;
     }
 
+    if (pendingAvatarDataUrl) {
+      window.localStorage.setItem(
+        PENDING_AVATAR_KEY,
+        JSON.stringify({ email: email.toLowerCase(), dataUrl: pendingAvatarDataUrl } satisfies PendingAvatar),
+      );
+    }
+
     setMessage(mode === "signup" ? "Account created. Check your email if confirmation is enabled." : "Logged in.");
+  }
+
+  function previewAvatar(file: File | null) {
+    setAvatarFile(file);
+    if (!file) {
+      setAvatarPreview("");
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    setAvatarPreview(url);
   }
 
   return (
@@ -532,10 +708,27 @@ function AuthScreen() {
           </div>
 
           {mode === "signup" && (
-            <label>
-              <span>Player name</span>
-              <input name="displayName" placeholder="Arjun Patil" />
-            </label>
+            <>
+              <label className="avatar-picker">
+                <span className="avatar-preview">
+                  {avatarPreview ? <img src={avatarPreview} alt="Selected profile preview" /> : <Camera size={26} />}
+                </span>
+                <span>
+                  Profile photo
+                  <small>1:1 square, compressed before upload</small>
+                </span>
+                <input
+                  aria-label="Profile photo"
+                  accept="image/png,image/jpeg,image/webp"
+                  type="file"
+                  onChange={(event) => previewAvatar(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <label>
+                <span>Player name</span>
+                <input name="displayName" placeholder="Arjun Patil" />
+              </label>
+            </>
           )}
           <label>
             <span>Email</span>
@@ -635,12 +828,16 @@ function PlayerView({
   role,
   match,
   deliveries,
+  busy,
+  onAvatarChange,
   onRefresh,
 }: {
   profile: Profile | null;
   role: AppRole;
   match: Match | null;
   deliveries: Delivery[];
+  busy: boolean;
+  onAvatarChange: (file: File) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -650,7 +847,7 @@ function PlayerView({
           <p className="eyebrow">Player account</p>
           <h2>{profile?.display_name ?? "Cricket player"}</h2>
         </div>
-        <Users size={40} />
+        <ProfilePhoto profile={profile} size="large" />
       </div>
 
       <section className="panel profile-panel">
@@ -658,6 +855,25 @@ function PlayerView({
           <h3>Your profile</h3>
           <span>{role}</span>
         </div>
+        <label className="change-photo">
+          <ProfilePhoto profile={profile} />
+          <span>
+            Change profile photo
+            <small>Square WebP, compressed automatically</small>
+          </span>
+          <input
+            accept="image/png,image/jpeg,image/webp"
+            disabled={busy}
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                onAvatarChange(file);
+              }
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
         <p>{profile?.email}</p>
         <SkillChips skills={profile?.skills ?? []} />
         <button className="secondary-action" onClick={onRefresh}>
@@ -825,7 +1041,7 @@ function PlayerAdminRow({
 
   return (
     <article className="admin-player-row">
-      <div className="avatar">{profile.display_name.slice(0, 1).toUpperCase()}</div>
+      <ProfilePhoto profile={profile} />
       <div>
         <input value={name} onChange={(event) => setName(event.target.value)} />
         <small>{profile.email}</small>
@@ -855,6 +1071,16 @@ function PlayerAdminRow({
         </div>
       </div>
     </article>
+  );
+}
+
+function ProfilePhoto({ profile, size = "normal" }: { profile: Profile | null; size?: "normal" | "large" }) {
+  const initial = profile?.display_name?.slice(0, 1).toUpperCase() || "P";
+
+  return (
+    <span className={`profile-photo ${size}`}>
+      {profile?.avatar_url ? <img src={profile.avatar_url} alt={`${profile.display_name} profile`} /> : initial}
+    </span>
   );
 }
 

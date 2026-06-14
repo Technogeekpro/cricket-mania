@@ -7,6 +7,8 @@ export type Profile = {
   display_name: string;
   phone: string | null;
   skills: string[];
+  avatar_url: string | null;
+  avatar_path: string | null;
   created_at: string;
   updated_at: string;
 };
