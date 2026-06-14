@@ -1,6 +1,7 @@
 import {
   Activity,
   Camera,
+  ChevronRight,
   ClipboardList,
   Flag,
   Gauge,
@@ -19,6 +20,7 @@ import {
   UserPlus,
   UserX,
   Users,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
@@ -486,7 +488,7 @@ export function App() {
       .select("*")
       .eq("match_id", matchId)
       .order("created_at", { ascending: false })
-      .limit(24);
+      .limit(120);
 
     if (error) {
       setNotice(error.message);
@@ -1022,6 +1024,37 @@ export function App() {
     await loadAdminLists();
   }
 
+  async function resetAllData() {
+    if (!isAdmin) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Reset everything? This deletes all matches, scoreboards, deliveries, and team squads. Player accounts and roles are kept. This cannot be undone.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.rpc("reset_app_data");
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to reset app data."));
+      return;
+    }
+
+    setActiveMatchId(null);
+    setMatches([]);
+    setDeliveries([]);
+    setMatchPlayers([]);
+    setNotice("All match data has been reset. Player accounts kept.");
+    if (session?.user) {
+      void loadMyCareer(session.user.id);
+    }
+  }
+
   async function uploadPendingAvatarIfNeeded(userId: string, currentProfile: Profile | null) {
     const saved = window.localStorage.getItem(PENDING_AVATAR_KEY);
     if (!saved || !session?.user.email) {
@@ -1193,6 +1226,7 @@ export function App() {
               onUpdateRole={updateRole}
               onToggleBan={updateProfileBan}
               onRefreshPlayers={loadAdminLists}
+              onResetAll={resetAllData}
               onGoToUmpire={() => setTab("umpire")}
             />
           )}
@@ -1504,10 +1538,10 @@ function ScoreboardView({
 
       <section className="panel">
         <div className="panel-title">
-          <h3>Recent balls</h3>
-          <span>{deliveries.length} shown</span>
+          <h3>Overs</h3>
+          <span>{deliveries.length} balls</span>
         </div>
-        <BallStrip deliveries={deliveries} />
+        <BallStrip deliveries={deliveries} matchPlayers={matchPlayers} />
       </section>
 
       <section className="panel">
@@ -1862,6 +1896,15 @@ function CaptainTeamView({
   const isFull = teamRows.length >= match.team_size;
   const bothCaptainsReady = Boolean(match.captain_a_id && match.captain_b_id);
   const isMyTurn = match.draft_turn === teamKey;
+  const [lineupOpen, setLineupOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const draftStatusText = !bothCaptainsReady
+    ? "Waiting for both captains to claim teams."
+    : isFull
+      ? "Your team is full."
+      : isMyTurn
+        ? "Your turn to add one player."
+        : `Waiting for ${teamLabel(match.draft_turn, match)}.`;
 
   return (
     <section className="stack">
@@ -1909,46 +1952,29 @@ function CaptainTeamView({
         </button>
       </form>
 
-      <CaptainLineupGround match={match} players={teamRows} teamKey={teamKey} />
-
-      <section className="panel team-add-form">
-        <div className="panel-title">
-          <h3>Draft players</h3>
-          <button className="tiny-action" type="button" onClick={onRefresh}>
-            Refresh
-          </button>
-        </div>
-        <p className="draft-status">
-          {!bothCaptainsReady
-            ? "Waiting for both captains to claim teams."
-            : isFull
-              ? "Your team is full."
-              : isMyTurn
-                ? "Your turn to add one player."
-                : `Waiting for ${teamLabel(match.draft_turn, match)}.`}
-        </p>
-        <div className="draft-player-list">
-          {draftPlayers.map((player) => {
-            const picked = pickedByProfile.get(player.id);
-            const disabled = busy || !bothCaptainsReady || !isMyTurn || isFull || Boolean(picked) || player.is_banned;
-            return (
-              <article className="draft-player-row" key={player.id}>
-                <ProfilePhoto profile={player} />
-                <div>
-                  <strong>{player.display_name}</strong>
-                  <small>
-                    {playerSkillText(player.skills)} ·{" "}
-                    {player.is_banned ? "Banned" : picked ? `Picked by ${teamLabel(picked.team_key === "b" ? "b" : "a", match)}` : "Available"}
-                  </small>
-                </div>
-                <button className="tiny-action" disabled={disabled} onClick={() => onAddPlayer(player.id)}>
-                  Add
-                </button>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+      <div className="panel lineup-summary">
+        <button
+          type="button"
+          className="lineup-summary-open"
+          onClick={() => setLineupOpen(true)}
+          aria-label="Open lineup ground view"
+        >
+          <div>
+            <span className="lineup-summary-label">Lineup preview</span>
+            <strong>{currentTeamName}</strong>
+            <small>{teamRows.length}/{match.team_size} picked · tap to view ground</small>
+          </div>
+          <ChevronRight size={16} />
+        </button>
+        <button
+          type="button"
+          className="lineup-summary-add"
+          onClick={() => setDraftOpen(true)}
+          aria-label="Add player"
+        >
+          <Plus size={16} />
+        </button>
+      </div>
 
       <section className="panel">
         <div className="panel-title">
@@ -1969,52 +1995,223 @@ function CaptainTeamView({
           {teamRows.length === 0 && <p className="empty-note">No players picked yet.</p>}
         </div>
       </section>
+
+      {lineupOpen && (
+        <LineupGroundModal
+          match={match}
+          players={teamRows}
+          teamKey={teamKey}
+          onAdd={() => {
+            setLineupOpen(false);
+            setDraftOpen(true);
+          }}
+          onClose={() => setLineupOpen(false)}
+        />
+      )}
+
+      {draftOpen && (
+        <DraftModal
+          match={match}
+          teamKey={teamKey}
+          players={draftPlayers}
+          pickedByProfile={pickedByProfile}
+          statusText={draftStatusText}
+          canAdd={bothCaptainsReady && isMyTurn && !isFull}
+          busy={busy}
+          onPick={onAddPlayer}
+          onRefresh={onRefresh}
+          onClose={() => setDraftOpen(false)}
+        />
+      )}
     </section>
   );
 }
 
-function CaptainLineupGround({
+const GROUP_LABELS: Record<LineupGroup, string> = {
+  "WICKET-KEEPERS": "Wicket-keeper",
+  "BATTERS": "Batsmen",
+  "ALL-ROUNDERS": "All-rounders",
+  "BOWLERS": "Bowlers",
+};
+
+function LineupGroundModal({
   match,
   players,
   teamKey,
+  onAdd,
+  onClose,
 }: {
   match: Match;
   players: MatchPlayer[];
   teamKey: TeamKey;
+  onAdd: () => void;
+  onClose: () => void;
 }) {
   const currentTeamName = teamLabel(teamKey, match);
-  const groupedPlayers = LINEUP_GROUPS.map((group) => ({
+  const grouped = LINEUP_GROUPS.map((group) => ({
     group,
     players: players.filter((player) => getLineupGroup(player.skills) === group),
   }));
 
   return (
-    <section className="lineup-card" aria-label={`${currentTeamName} lineup`}>
-      <div className="lineup-title">
-        <div>
-          <span>Lineup preview</span>
-          <strong>{currentTeamName}</strong>
+    <div className="lineup-modal" role="dialog" aria-label={`${currentTeamName} ground view`}>
+      <header className="lineup-modal-header">
+        <button className="icon-button dark" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        <div className="lineup-modal-title">
+          <span>{currentTeamName}</span>
+          <small>{players.length}/{match.team_size} picked</small>
         </div>
-        <small>{players.length}/{match.team_size}</small>
+        <button className="icon-button dark" onClick={onAdd} aria-label="Add player">
+          <Plus size={18} />
+        </button>
+      </header>
+      <div className="lineup-modal-ground" style={{ backgroundImage: `url(${grassGroundLineupUrl})` }}>
+        {players.length === 0 && (
+          <div className="lineup-modal-empty">
+            <p>No players on the ground yet.</p>
+            <button className="primary-action" onClick={onAdd}>
+              <Plus size={16} />
+              Add players
+            </button>
+          </div>
+        )}
+        {players.length > 0 &&
+          grouped.map(({ group, players: groupPlayers }) => (
+            <div className="lineup-row" key={group}>
+              <span className="lineup-row-label">{GROUP_LABELS[group]}</span>
+              <div className="lineup-row-players">
+                {groupPlayers.length === 0 ? (
+                  <span className="lineup-row-empty">—</span>
+                ) : (
+                  groupPlayers.map((player) => (
+                    <div className="lineup-tile" key={player.id}>
+                      <div className="lineup-tile-avatar">
+                        <MatchPlayerPhoto player={player} />
+                        {player.is_captain && <span className="lineup-tile-badge">C</span>}
+                      </div>
+                      <span className="lineup-tile-name">{shortPlayerName(player.display_name)}</span>
+                      <small className="lineup-tile-role">
+                        {playerSkillText(player.skills).split(" · ")[0]}
+                      </small>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ))}
       </div>
-      <div className="lineup-ground" style={{ backgroundImage: `url(${grassGroundLineupUrl})` }}>
-        {players.length === 0 && <p className="lineup-empty">Add players to build your ground view.</p>}
-        {groupedPlayers.map(({ group, players: groupPlayers }) => (
-          <div className={`lineup-group lineup-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`} key={group}>
-            <span className="lineup-group-label">{group}</span>
-            <div className="lineup-slots">
-              {groupPlayers.map((player) => (
-                <div className="lineup-player" key={player.id}>
-                  <MatchPlayerPhoto player={player} />
-                  <strong>{shortPlayerName(player.display_name)}</strong>
-                  <small>{player.is_captain ? "Captain" : playerSkillText(player.skills).split(" · ")[0]}</small>
-                </div>
+    </div>
+  );
+}
+
+function DraftModal({
+  match,
+  teamKey,
+  players,
+  pickedByProfile,
+  statusText,
+  canAdd,
+  busy,
+  onPick,
+  onRefresh,
+  onClose,
+}: {
+  match: Match;
+  teamKey: TeamKey;
+  players: Profile[];
+  pickedByProfile: Map<string | null, MatchPlayer>;
+  statusText: string;
+  canAdd: boolean;
+  busy: boolean;
+  onPick: (profileId: string) => void;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const currentTeamName = teamLabel(teamKey, match);
+  const available = players.filter((player) => !pickedByProfile.get(player.id) && !player.is_banned);
+  const others = players.filter((player) => pickedByProfile.get(player.id) || player.is_banned);
+
+  return (
+    <div className="lineup-modal draft-modal" role="dialog" aria-label="Pick a player">
+      <header className="lineup-modal-header solid">
+        <button className="icon-button" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        <div className="lineup-modal-title">
+          <span>Pick a player</span>
+          <small>{currentTeamName}</small>
+        </div>
+        <button className="icon-button" onClick={onRefresh} aria-label="Refresh">
+          <RotateCcw size={16} />
+        </button>
+      </header>
+      <div className="draft-modal-body">
+        <p className="draft-status">{statusText}</p>
+
+        {available.length > 0 && (
+          <div className="draft-section">
+            <div className="draft-section-label">Available</div>
+            <div className="draft-player-list">
+              {available.map((player) => (
+                <article className="draft-player-row" key={player.id}>
+                  <ProfilePhoto profile={player} />
+                  <div>
+                    <strong>{player.display_name}</strong>
+                    <small>{playerSkillText(player.skills)}</small>
+                  </div>
+                  <button
+                    className="tiny-action accent"
+                    disabled={!canAdd || busy}
+                    onClick={() => {
+                      onPick(player.id);
+                    }}
+                  >
+                    <Plus size={12} />
+                    Add
+                  </button>
+                </article>
               ))}
             </div>
           </div>
-        ))}
+        )}
+
+        {others.length > 0 && (
+          <div className="draft-section">
+            <div className="draft-section-label">Unavailable</div>
+            <div className="draft-player-list">
+              {others.map((player) => {
+                const picked = pickedByProfile.get(player.id);
+                return (
+                  <article className="draft-player-row muted" key={player.id}>
+                    <ProfilePhoto profile={player} />
+                    <div>
+                      <strong>{player.display_name}</strong>
+                      <small>
+                        {playerSkillText(player.skills)} ·{" "}
+                        {player.is_banned
+                          ? "Banned"
+                          : picked
+                            ? `Picked by ${teamLabel(picked.team_key === "b" ? "b" : "a", match)}`
+                            : ""}
+                      </small>
+                    </div>
+                    <span className="result-chip lost">
+                      {player.is_banned ? "Banned" : "Picked"}
+                    </span>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {available.length === 0 && others.length === 0 && (
+          <p className="empty-note">No player accounts available yet.</p>
+        )}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -2135,10 +2332,10 @@ function UmpireView({
 
       <section className="panel">
         <div className="panel-title">
-          <h3>Recent balls</h3>
-          <span>{deliveries.length} shown</span>
+          <h3>Overs</h3>
+          <span>{deliveries.length} balls</span>
         </div>
-        <BallStrip deliveries={deliveries} />
+        <BallStrip deliveries={deliveries} matchPlayers={matchPlayers} />
       </section>
 
       <button className="secondary-action share-action" onClick={handleShare}>
@@ -2159,6 +2356,7 @@ function ManageView({
   onUpdateRole,
   onToggleBan,
   onRefreshPlayers,
+  onResetAll,
   onGoToUmpire,
 }: {
   busy: boolean;
@@ -2170,6 +2368,7 @@ function ManageView({
   onUpdateRole: (profileId: string, nextRole: AppRole) => void;
   onToggleBan: (profileId: string, banned: boolean) => void;
   onRefreshPlayers: () => void;
+  onResetAll: () => void;
   onGoToUmpire: () => void;
 }) {
   const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
@@ -2285,6 +2484,21 @@ function ManageView({
           ))}
           {profiles.length === 0 && <p className="empty-note">No player accounts yet.</p>}
         </div>
+      </section>
+
+      <section className="panel danger-zone">
+        <div className="panel-title">
+          <h3>Danger zone</h3>
+          <span>Irreversible</span>
+        </div>
+        <p className="empty-note">
+          Wipe every match, scoreboard, delivery, and team squad. Player accounts, roles, and
+          profile photos are kept.
+        </p>
+        <button className="secondary-action danger-soft" disabled={busy} onClick={onResetAll}>
+          <RotateCcw size={16} />
+          Reset all match data
+        </button>
       </section>
     </section>
   );
@@ -2591,15 +2805,88 @@ function PlayerStat({ label, value, highlight = false }: { label: string; value:
   );
 }
 
-function BallStrip({ deliveries }: { deliveries: Delivery[] }) {
+type OverGroup = {
+  key: string;
+  over: number;
+  innings: number;
+  bowlerId: string | null;
+  balls: Delivery[];
+  runs: number;
+  wickets: number;
+};
+
+function groupDeliveriesByOver(deliveries: Delivery[]): OverGroup[] {
+  // deliveries arrive newest-first from the loader; walk chronologically so we can track legal balls
+  const sorted = [...deliveries].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const groups: OverGroup[] = [];
+  let current: OverGroup | null = null;
+  const legalsPerInnings = new Map<number, number>();
+
+  for (const d of sorted) {
+    const legalsBefore = legalsPerInnings.get(d.innings) ?? 0;
+    const overNumber = Math.floor(legalsBefore / 6) + 1;
+    const key = `${d.innings}-${overNumber}-${d.bowler_id ?? "?"}`;
+
+    if (!current || current.key !== key) {
+      current = {
+        key,
+        over: overNumber,
+        innings: d.innings,
+        bowlerId: d.bowler_id,
+        balls: [],
+        runs: 0,
+        wickets: 0,
+      };
+      groups.push(current);
+    }
+
+    current.balls.push(d);
+    current.runs += d.runs;
+    if (d.wicket) current.wickets += 1;
+
+    if (d.legal) legalsPerInnings.set(d.innings, legalsBefore + 1);
+  }
+
+  return groups.reverse();
+}
+
+function BallStrip({ deliveries, matchPlayers }: { deliveries: Delivery[]; matchPlayers: MatchPlayer[] }) {
+  if (deliveries.length === 0) {
+    return <p className="empty-note">No balls scored yet.</p>;
+  }
+
+  const overs = groupDeliveriesByOver(deliveries);
+  const playerById = new Map(matchPlayers.map((p) => [p.id, p]));
+
   return (
-    <div className="ball-strip">
-      {deliveries.map((delivery) => (
-        <span className={delivery.wicket ? "wicket-ball" : ""} key={delivery.id}>
-          {delivery.label}
-        </span>
-      ))}
-      {deliveries.length === 0 && <p className="empty-note">No balls scored yet.</p>}
+    <div className="over-table">
+      {overs.map((over) => {
+        const bowler = over.bowlerId ? playerById.get(over.bowlerId) : null;
+        const bowlerName = bowler?.display_name ?? "Bowler";
+        return (
+          <div className="over-row" key={over.key}>
+            <div className="over-bowler">
+              <strong>{shortPlayerName(bowlerName)}</strong>
+              <small>
+                Ov {over.over} · {over.runs}-{over.wickets}
+              </small>
+            </div>
+            <div className="over-balls">
+              {over.balls.map((delivery) => {
+                let cls = "over-ball";
+                if (delivery.wicket) cls += " wicket-ball";
+                else if (delivery.extra) cls += " extra-ball";
+                else if (delivery.runs >= 4) cls += " boundary-ball";
+                return (
+                  <span className={cls} key={delivery.id}>
+                    {delivery.label}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
