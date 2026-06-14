@@ -2,11 +2,15 @@ import {
   Activity,
   Camera,
   ClipboardList,
+  Flag,
+  Gauge,
   LogOut,
   Mail,
   Plus,
   RotateCcw,
+  Share2,
   Shield,
+  Target,
   UserCog,
   Swords,
   Trophy,
@@ -16,10 +20,36 @@ import {
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
-import type { AppRole, Delivery, Match, MatchPlayer, MatchStatus, Profile, UserRole } from "./lib/database.types";
+import type { AppRole, Delivery, Match, MatchPlayer, Profile, TeamKey, UserRole, WinnerTeam } from "./lib/database.types";
 
-type Tab = "scoreboard" | "players" | "team" | "admin";
+type Tab = "scoreboard" | "players" | "team" | "umpire" | "manage";
 type ExtraType = "WD" | "NB" | "B" | "LB";
+
+type CareerMatch = {
+  matchId: string;
+  title: string;
+  createdAt: string;
+  teamKey: "pool" | "a" | "b";
+  result: "won" | "lost" | "tie" | "pending";
+  runs: number;
+  balls: number;
+  wickets: number;
+};
+
+type CareerStats = {
+  played: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  runs: number;
+  balls: number;
+  fours: number;
+  sixes: number;
+  wicketsTaken: number;
+  ballsBowled: number;
+  runsConceded: number;
+  recent: CareerMatch[];
+};
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
 const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
@@ -40,6 +70,45 @@ const getAuthRedirectUrl = () => {
 };
 
 const getOvers = (legalBalls: number) => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+
+const formatRate = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "0.00");
+
+const runRate = (runs: number, legalBalls: number) => (legalBalls > 0 ? (runs * 6) / legalBalls : 0);
+
+const strikeRate = (runs: number, balls: number) => (balls > 0 ? (runs / balls) * 100 : 0);
+
+const requiredRunRate = (target: number, runs: number, totalBalls: number, legalBalls: number) => {
+  const ballsLeft = totalBalls - legalBalls;
+  return ballsLeft > 0 ? ((target - runs) * 6) / ballsLeft : 0;
+};
+
+const teamLabel = (key: TeamKey) => (key === "a" ? "Team A" : "Team B");
+const otherTeam = (key: TeamKey): TeamKey => (key === "a" ? "b" : "a");
+
+async function shareContent(
+  payload: { title: string; text: string; url?: string },
+  onFallback?: (message: string) => void,
+) {
+  const url = payload.url ?? PRODUCTION_URL;
+
+  if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+    try {
+      await navigator.share({ title: payload.title, text: payload.text, url });
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(`${payload.text} ${url}`.trim());
+    onFallback?.("Copied to clipboard.");
+  } catch {
+    onFallback?.("Sharing is not supported on this device.");
+  }
+}
 
 type PendingAvatar = {
   email: string;
@@ -138,6 +207,25 @@ async function uploadAvatarBlob(userId: string, blob: Blob, oldPath?: string | n
   return profile as Profile;
 }
 
+function formatErrorMessage(error: unknown, fallback: string): string {
+  if (!error) return fallback;
+  if (typeof error === "string") return error;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "object") {
+    const obj = error as Record<string, unknown>;
+    const message = (obj.message ?? obj.error ?? obj.msg) as string | undefined;
+    const code = (obj.statusCode ?? obj.status ?? obj.code) as string | number | undefined;
+    if (message) return code ? `${message} (${code})` : message;
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== "{}") return json;
+    } catch {
+      // ignore
+    }
+  }
+  return fallback;
+}
+
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
@@ -160,6 +248,7 @@ export function App() {
   const [tab, setTab] = useState<Tab>("scoreboard");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [career, setCareer] = useState<CareerStats | null>(null);
 
   const activeMatch = useMemo(
     () => matches.find((match) => match.id === activeMatchId) ?? matches[0] ?? null,
@@ -219,6 +308,9 @@ export function App() {
       .channel("cricket-mania-scoreboard")
       .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
         void loadMatches();
+        if (session.user) {
+          void loadMyCareer(session.user.id);
+        }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, () => {
         if (activeMatch?.id) {
@@ -228,6 +320,9 @@ export function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "match_players" }, () => {
         if (activeMatch?.id) {
           void loadMatchPlayers(activeMatch.id);
+        }
+        if (session.user) {
+          void loadMyCareer(session.user.id);
         }
       })
       .subscribe();
@@ -244,23 +339,51 @@ export function App() {
   }, [activeMatch?.id]);
 
   useEffect(() => {
-    if ((tab === "admin" && !isAdmin) || (tab === "team" && !showTeamTab)) {
+    if ((tab === "umpire" || tab === "manage") && !isAdmin) {
       setTab("scoreboard");
+      return;
+    }
+    if (tab === "team" && !showTeamTab) {
+      setTab("scoreboard");
+      return;
+    }
+    if (tab === "players" && isAdmin) {
+      setTab("umpire");
     }
   }, [isAdmin, showTeamTab, tab]);
+
+  useEffect(() => {
+    if (isAdmin && tab === "scoreboard") {
+      setTab("umpire");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   async function loadAppData(userId: string) {
     setBusy(true);
     try {
-      const [{ data: profileData }, { data: roleData }] = await Promise.all([
+      const [profileResult, roleResult] = await Promise.all([
         supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
         supabase.from("user_roles").select("*").eq("user_id", userId).maybeSingle(),
       ]);
+
+      if (profileResult.error) {
+        console.error("[profile load failed]", profileResult.error);
+        setNotice(formatErrorMessage(profileResult.error, "Could not load profile."));
+      }
+      if (roleResult.error) {
+        console.error("[role load failed]", roleResult.error);
+      }
+
+      const profileData = profileResult.data;
+      const roleData = roleResult.data;
 
       let nextProfile = (profileData ?? null) as Profile | null;
       nextProfile = await uploadPendingAvatarIfNeeded(userId, nextProfile);
       setProfile(nextProfile);
       setRole(roleData?.role ?? "player");
+
+      await loadMyCareer(userId);
 
       const loadedMatches = await loadMatches();
       const assignedAsCaptain = loadedMatches.some(
@@ -348,6 +471,111 @@ export function App() {
     await loadPlayerProfiles(true);
   }
 
+  async function loadMyCareer(userId: string) {
+    const { data: rows, error } = await supabase
+      .from("match_players")
+      .select("*")
+      .eq("profile_id", userId);
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    const appearances = (rows ?? []) as MatchPlayer[];
+    if (appearances.length === 0) {
+      setCareer({
+        played: 0,
+        wins: 0,
+        losses: 0,
+        ties: 0,
+        runs: 0,
+        balls: 0,
+        fours: 0,
+        sixes: 0,
+        wicketsTaken: 0,
+        ballsBowled: 0,
+        runsConceded: 0,
+        recent: [],
+      });
+      return;
+    }
+
+    const matchIds = Array.from(new Set(appearances.map((row) => row.match_id)));
+    const { data: matchRows, error: matchError } = await supabase
+      .from("matches")
+      .select("id, title, status, winner_team, created_at")
+      .in("id", matchIds);
+
+    if (matchError) {
+      setNotice(matchError.message);
+      return;
+    }
+
+    const matchById = new Map((matchRows ?? []).map((row) => [row.id, row]));
+    const stats: CareerStats = {
+      played: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+      runs: 0,
+      balls: 0,
+      fours: 0,
+      sixes: 0,
+      wicketsTaken: 0,
+      ballsBowled: 0,
+      runsConceded: 0,
+      recent: [],
+    };
+
+    for (const row of appearances) {
+      stats.runs += row.runs_scored;
+      stats.balls += row.balls_faced;
+      stats.fours += row.fours;
+      stats.sixes += row.sixes;
+      stats.wicketsTaken += row.wickets_taken;
+      stats.ballsBowled += row.balls_bowled;
+      stats.runsConceded += row.runs_conceded;
+
+      const match = matchById.get(row.match_id) as
+        | { id: string; title: string; status: string; winner_team: WinnerTeam | null; created_at: string }
+        | undefined;
+      if (!match) {
+        continue;
+      }
+
+      let result: CareerMatch["result"] = "pending";
+      if (match.status === "completed") {
+        stats.played += 1;
+        if (match.winner_team === "tie") {
+          stats.ties += 1;
+          result = "tie";
+        } else if (match.winner_team && match.winner_team === row.team_key) {
+          stats.wins += 1;
+          result = "won";
+        } else if (match.winner_team) {
+          stats.losses += 1;
+          result = "lost";
+        }
+      }
+
+      stats.recent.push({
+        matchId: match.id,
+        title: match.title,
+        createdAt: match.created_at,
+        teamKey: row.team_key,
+        result,
+        runs: row.runs_scored,
+        balls: row.balls_faced,
+        wickets: row.wickets_taken,
+      });
+    }
+
+    stats.recent.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    stats.recent = stats.recent.slice(0, 8);
+    setCareer(stats);
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setTab("scoreboard");
@@ -361,11 +589,10 @@ export function App() {
     const title = String(formData.get("title") ?? "Turf Match").trim() || "Turf Match";
     const venue = String(formData.get("venue") ?? "Local Turf").trim() || "Local Turf";
     const teamSize = Number(formData.get("teamSize") ?? 6);
+    const totalOvers = Math.max(1, Math.min(50, Math.round(Number(formData.get("totalOvers") ?? 6) || 6)));
+    const firstBatting: TeamKey = String(formData.get("firstBatting") ?? "a") === "b" ? "b" : "a";
     const captainAId = String(formData.get("captainAId") ?? "");
     const captainBId = String(formData.get("captainBId") ?? "");
-    const striker = String(formData.get("striker") ?? "").trim();
-    const nonStriker = String(formData.get("nonStriker") ?? "").trim();
-    const bowler = String(formData.get("bowler") ?? "").trim();
 
     if (captainAId && captainBId && captainAId === captainBId) {
       setNotice("Choose two different captains.");
@@ -379,10 +606,11 @@ export function App() {
         title,
         venue,
         team_size: teamSize,
-        status: "live",
-        striker_name: striker || null,
-        non_striker_name: nonStriker || null,
-        bowler_name: bowler || null,
+        status: "setup",
+        total_overs: totalOvers,
+        first_batting_team: firstBatting,
+        batting_team_key: firstBatting,
+        current_innings: 1,
         captain_a_id: captainAId || null,
         captain_b_id: captainBId || null,
         created_by: session.user.id,
@@ -397,7 +625,7 @@ export function App() {
       return;
     }
 
-    setNotice("Match created and live.");
+    setNotice(`Match created. ${totalOvers} overs each, ${teamLabel(firstBatting)} bats first.`);
     setActiveMatchId(data.id);
 
     const captainRows = [
@@ -442,12 +670,23 @@ export function App() {
     await loadMatchPlayers(data.id);
   }
 
-  async function updateMatchStatus(status: MatchStatus) {
+  async function setCrease(values: { striker_id?: string | null; non_striker_id?: string | null; bowler_id?: string | null }) {
     if (!activeMatch || !isAdmin) {
       return;
     }
 
-    const { error } = await supabase.from("matches").update({ status }).eq("id", activeMatch.id);
+    const update: Partial<Match> = { ...values };
+    if (values.striker_id !== undefined) {
+      update.striker_name = matchPlayers.find((item) => item.id === values.striker_id)?.display_name ?? null;
+    }
+    if (values.non_striker_id !== undefined) {
+      update.non_striker_name = matchPlayers.find((item) => item.id === values.non_striker_id)?.display_name ?? null;
+    }
+    if (values.bowler_id !== undefined) {
+      update.bowler_name = matchPlayers.find((item) => item.id === values.bowler_id)?.display_name ?? null;
+    }
+
+    const { error } = await supabase.from("matches").update(update).eq("id", activeMatch.id);
     if (error) {
       setNotice(error.message);
       return;
@@ -460,47 +699,204 @@ export function App() {
     if (!activeMatch || !session?.user || !isAdmin) {
       return;
     }
+    if (activeMatch.status === "completed") {
+      setNotice("This match is already complete.");
+      return;
+    }
 
-    const legal = options.extra !== "WD" && options.extra !== "NB";
-    const runValue = options.extra ? runs + 1 : runs;
+    const strikerId = activeMatch.striker_id;
+    const bowlerId = activeMatch.bowler_id;
+    if (!strikerId || !bowlerId) {
+      setNotice("Pick a striker and a bowler before scoring.");
+      return;
+    }
+
+    const striker = matchPlayers.find((item) => item.id === strikerId);
+    const bowler = matchPlayers.find((item) => item.id === bowlerId);
+    if (!striker || !bowler) {
+      setNotice("Striker or bowler is not part of this match.");
+      return;
+    }
+
+    const extra = options.extra;
+    const isWicket = Boolean(options.wicket);
+    const legal = extra !== "WD" && extra !== "NB";
+    const offBat = !extra;
+    const runValue = extra ? runs + 1 : runs;
     const nextLegalBalls = activeMatch.legal_balls + (legal ? 1 : 0);
-    const nextWickets = activeMatch.wickets + (options.wicket ? 1 : 0);
-    const label = options.wicket
-      ? "W"
-      : options.extra
-        ? `${options.extra}${runs > 0 ? `+${runs}` : ""}`
-        : String(runs);
+    const nextWickets = activeMatch.wickets + (isWicket ? 1 : 0);
+    const nextRuns = activeMatch.runs + runValue;
+    const overComplete = legal && nextLegalBalls % 6 === 0;
+    const label = isWicket ? "W" : extra ? `${extra}${runs > 0 ? `+${runs}` : ""}` : String(runs);
+
+    // Batting credit: only off-the-bat runs count to the striker; B/LB still cost a ball faced.
+    const strikerUpdate: Partial<MatchPlayer> = {};
+    if (offBat) {
+      strikerUpdate.runs_scored = striker.runs_scored + runs;
+      strikerUpdate.balls_faced = striker.balls_faced + 1;
+      if (runs === 4) strikerUpdate.fours = striker.fours + 1;
+      if (runs === 6) strikerUpdate.sixes = striker.sixes + 1;
+    } else if (extra === "B" || extra === "LB") {
+      strikerUpdate.balls_faced = striker.balls_faced + 1;
+    }
+    if (isWicket) {
+      strikerUpdate.is_out = true;
+      strikerUpdate.dismissal = `b ${bowler.display_name}`;
+    }
+
+    // Bowler is charged for everything except byes / leg byes; ball counts only when legal.
+    const bowlerRuns = extra === "B" || extra === "LB" ? 0 : runValue;
+    const bowlerUpdate: Partial<MatchPlayer> = {
+      balls_bowled: bowler.balls_bowled + (legal ? 1 : 0),
+      runs_conceded: bowler.runs_conceded + bowlerRuns,
+      wickets_taken: bowler.wickets_taken + (isWicket ? 1 : 0),
+    };
+
+    // Strike rotation: swap on odd runs, then again at the end of an over.
+    let nextStriker: string | null = strikerId;
+    let nextNonStriker = activeMatch.non_striker_id;
+    if (!isWicket) {
+      const ranOdd = (offBat || extra === "B" || extra === "LB") && runs % 2 === 1;
+      let swap = ranOdd;
+      if (overComplete) swap = !swap;
+      if (swap && nextNonStriker) {
+        nextStriker = nextNonStriker;
+        nextNonStriker = strikerId;
+      }
+    } else {
+      // Dismissed batter leaves the crease; the umpire selects the replacement.
+      nextStriker = null;
+    }
 
     setBusy(true);
-    const [{ error: deliveryError }, { error: matchError }] = await Promise.all([
+    const writes = await Promise.all([
       supabase.from("deliveries").insert({
         match_id: activeMatch.id,
         label,
         runs: runValue,
         legal,
-        wicket: Boolean(options.wicket),
-        extra: options.extra ?? null,
+        wicket: isWicket,
+        extra: extra ?? null,
         ball_index: nextLegalBalls,
+        innings: activeMatch.current_innings,
+        striker_id: strikerId,
+        bowler_id: bowlerId,
         created_by: session.user.id,
       }),
+      supabase.from("match_players").update(strikerUpdate).eq("id", strikerId),
+      supabase.from("match_players").update(bowlerUpdate).eq("id", bowlerId),
       supabase
         .from("matches")
         .update({
-          runs: activeMatch.runs + runValue,
+          runs: nextRuns,
           wickets: nextWickets,
           legal_balls: nextLegalBalls,
           status: "live",
+          striker_id: nextStriker,
+          non_striker_id: nextNonStriker,
         })
         .eq("id", activeMatch.id),
     ]);
     setBusy(false);
 
-    if (deliveryError || matchError) {
-      setNotice(deliveryError?.message ?? matchError?.message ?? "Unable to update score.");
+    const failed = writes.find((result) => result.error);
+    if (failed?.error) {
+      setNotice((failed.error as { message?: string }).message ?? "Unable to update score.");
       return;
     }
 
-    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id)]);
+    if (isWicket) {
+      setNotice("Wicket! Pick the next batter.");
+    } else if (overComplete && activeMatch.legal_balls + 1 < activeMatch.total_overs * 6) {
+      setNotice("Over complete. Choose the next bowler.");
+    }
+
+    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
+  }
+
+  async function endInnings() {
+    if (!activeMatch || !isAdmin) {
+      return;
+    }
+
+    if (activeMatch.current_innings === 2) {
+      await finishMatch();
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase
+      .from("matches")
+      .update({
+        innings1_runs: activeMatch.runs,
+        innings1_wickets: activeMatch.wickets,
+        innings1_balls: activeMatch.legal_balls,
+        target: activeMatch.runs + 1,
+        current_innings: 2,
+        batting_team_key: otherTeam(activeMatch.batting_team_key),
+        runs: 0,
+        wickets: 0,
+        legal_balls: 0,
+        striker_id: null,
+        non_striker_id: null,
+        bowler_id: null,
+        striker_name: null,
+        non_striker_name: null,
+        bowler_name: null,
+        status: "live",
+      })
+      .eq("id", activeMatch.id);
+    setBusy(false);
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    setNotice(`Innings break — target ${activeMatch.runs + 1}. Pick the chasing openers.`);
+    await loadMatches();
+  }
+
+  async function finishMatch() {
+    if (!activeMatch || !isAdmin) {
+      return;
+    }
+
+    const first = activeMatch.innings1_runs;
+    const second = activeMatch.runs;
+    const chasingTeam = activeMatch.batting_team_key;
+    const defendingTeam = otherTeam(chasingTeam);
+    const chasingSquad = matchPlayers.filter((item) => item.team_key === chasingTeam).length;
+
+    let winner: WinnerTeam;
+    let note: string;
+    if (second > first) {
+      winner = chasingTeam;
+      const wicketsLeft = Math.max(0, chasingSquad - 1 - activeMatch.wickets);
+      note = `${teamLabel(chasingTeam)} won by ${wicketsLeft} wicket${wicketsLeft === 1 ? "" : "s"}`;
+    } else if (second === first) {
+      winner = "tie";
+      note = "Match tied";
+    } else {
+      winner = defendingTeam;
+      const margin = first - second;
+      note = `${teamLabel(defendingTeam)} won by ${margin} run${margin === 1 ? "" : "s"}`;
+    }
+
+    setBusy(true);
+    const { error } = await supabase
+      .from("matches")
+      .update({ winner_team: winner, result_note: note, status: "completed" })
+      .eq("id", activeMatch.id);
+    setBusy(false);
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    setNotice(note);
+    await loadMatches();
   }
 
   async function resetScore() {
@@ -509,21 +905,54 @@ export function App() {
     }
 
     setBusy(true);
-    const [{ error: deleteError }, { error: matchError }] = await Promise.all([
+    const [{ error: deleteError }, { error: matchError }, { error: playerError }] = await Promise.all([
       supabase.from("deliveries").delete().eq("match_id", activeMatch.id),
       supabase
         .from("matches")
-        .update({ runs: 0, wickets: 0, legal_balls: 0, status: "setup" })
+        .update({
+          runs: 0,
+          wickets: 0,
+          legal_balls: 0,
+          status: "setup",
+          current_innings: 1,
+          batting_team_key: activeMatch.first_batting_team,
+          target: null,
+          innings1_runs: 0,
+          innings1_wickets: 0,
+          innings1_balls: 0,
+          striker_id: null,
+          non_striker_id: null,
+          bowler_id: null,
+          striker_name: null,
+          non_striker_name: null,
+          bowler_name: null,
+          winner_team: null,
+          result_note: null,
+        })
         .eq("id", activeMatch.id),
+      supabase
+        .from("match_players")
+        .update({
+          runs_scored: 0,
+          balls_faced: 0,
+          fours: 0,
+          sixes: 0,
+          is_out: false,
+          dismissal: null,
+          balls_bowled: 0,
+          runs_conceded: 0,
+          wickets_taken: 0,
+        })
+        .eq("match_id", activeMatch.id),
     ]);
     setBusy(false);
 
-    if (deleteError || matchError) {
-      setNotice(deleteError?.message ?? matchError?.message ?? "Unable to reset score.");
+    if (deleteError || matchError || playerError) {
+      setNotice(deleteError?.message ?? matchError?.message ?? playerError?.message ?? "Unable to reset score.");
       return;
     }
 
-    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id)]);
+    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
   }
 
   async function updatePlayer(profileId: string, values: Partial<Pick<Profile, "display_name" | "phone" | "skills">>) {
@@ -621,7 +1050,8 @@ export function App() {
       setNotice("Profile photo saved.");
       return updatedProfile;
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to save pending profile photo.");
+      console.error("[pending avatar upload failed]", error);
+      setNotice(formatErrorMessage(error, "Unable to save pending profile photo."));
       return currentProfile;
     }
   }
@@ -638,7 +1068,9 @@ export function App() {
       setProfile(updatedProfile);
       setNotice("Profile photo updated.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to update profile photo.");
+      const message = formatErrorMessage(error, "Unable to update profile photo.");
+      console.error("[avatar upload failed]", error);
+      setNotice(message);
     } finally {
       setBusy(false);
     }
@@ -677,7 +1109,12 @@ export function App() {
           <div className="match-strip">
             <strong>{activeMatch?.title ?? "No Match"}</strong>
             <span>{activeMatch ? `${activeMatch.runs}/${activeMatch.wickets}` : "0/0"}</span>
-            <span>{activeMatch ? `${getOvers(activeMatch.legal_balls)} ov` : "0.0 ov"}</span>
+            <span>
+              {activeMatch ? `${getOvers(activeMatch.legal_balls)}/${activeMatch.total_overs} ov` : "0.0 ov"}
+            </span>
+            <span>
+              {activeMatch ? `CRR ${formatRate(runRate(activeMatch.runs, activeMatch.legal_balls))}` : "CRR 0.00"}
+            </span>
           </div>
           <div className="account-strip">
             <span>{profile?.display_name ?? session.user.email}</span>
@@ -692,23 +1129,25 @@ export function App() {
             </button>
           )}
 
-          {tab === "scoreboard" && (
+          {tab === "scoreboard" && !isAdmin && (
             <ScoreboardView
               match={activeMatch}
               deliveries={deliveries}
               matches={matches}
+              matchPlayers={matchPlayers}
               onSelectMatch={setActiveMatchId}
+              onShare={(message) => setNotice(message)}
             />
           )}
 
-          {tab === "players" && (
+          {tab === "players" && !isAdmin && (
             <PlayerView
               profile={profile}
               role={role}
-              match={activeMatch}
-              deliveries={deliveries}
+              career={career}
               busy={busy}
               onAvatarChange={updateOwnAvatar}
+              onShare={(message) => setNotice(message)}
               onRefresh={() => session.user && loadAppData(session.user.id)}
             />
           )}
@@ -731,37 +1170,54 @@ export function App() {
             />
           )}
 
-          {tab === "admin" && isAdmin && (
-            <AdminView
+          {tab === "umpire" && isAdmin && (
+            <UmpireView
+              busy={busy}
+              match={activeMatch}
+              deliveries={deliveries}
+              matchPlayers={matchPlayers}
+              onScore={scoreDelivery}
+              onReset={resetScore}
+              onSetCrease={setCrease}
+              onEndInnings={endInnings}
+              onShare={(message) => setNotice(message)}
+              onGoToManage={() => setTab("manage")}
+            />
+          )}
+
+          {tab === "manage" && isAdmin && (
+            <ManageView
               busy={busy}
               match={activeMatch}
               profiles={profiles}
               roles={roles}
               currentUserId={session.user.id}
               onCreateMatch={createMatch}
-              onScore={scoreDelivery}
-              onReset={resetScore}
-              onStatus={updateMatchStatus}
               onUpdatePlayer={updatePlayer}
               onUpdateRole={updateRole}
               onRefreshPlayers={loadAdminLists}
+              onGoToUmpire={() => setTab("umpire")}
             />
           )}
         </div>
 
         <nav className="bottom-nav sticky-bottom" aria-label="Primary">
-          <NavButton
-            icon={<Trophy size={22} />}
-            label="Score"
-            active={tab === "scoreboard"}
-            onClick={() => setTab("scoreboard")}
-          />
-          <NavButton
-            icon={<Users size={22} />}
-            label="Players"
-            active={tab === "players"}
-            onClick={() => setTab("players")}
-          />
+          {!isAdmin && (
+            <NavButton
+              icon={<Trophy size={22} />}
+              label="Score"
+              active={tab === "scoreboard"}
+              onClick={() => setTab("scoreboard")}
+            />
+          )}
+          {!isAdmin && (
+            <NavButton
+              icon={<Users size={22} />}
+              label="Profile"
+              active={tab === "players"}
+              onClick={() => setTab("players")}
+            />
+          )}
           {showTeamTab && (
             <NavButton
               icon={<Swords size={22} />}
@@ -772,10 +1228,18 @@ export function App() {
           )}
           {isAdmin && (
             <NavButton
+              icon={<Gauge size={22} />}
+              label="Umpire"
+              active={tab === "umpire"}
+              onClick={() => setTab("umpire")}
+            />
+          )}
+          {isAdmin && (
+            <NavButton
               icon={<Shield size={22} />}
-              label="Admin"
-              active={tab === "admin"}
-              onClick={() => setTab("admin")}
+              label="Manage"
+              active={tab === "manage"}
+              onClick={() => setTab("manage")}
             />
           )}
         </nav>
@@ -926,12 +1390,16 @@ function ScoreboardView({
   match,
   deliveries,
   matches,
+  matchPlayers,
   onSelectMatch,
+  onShare,
 }: {
   match: Match | null;
   deliveries: Delivery[];
   matches: Match[];
+  matchPlayers: MatchPlayer[];
   onSelectMatch: (id: string) => void;
+  onShare: (message: string) => void;
 }) {
   if (!match) {
     return (
@@ -943,25 +1411,77 @@ function ScoreboardView({
     );
   }
 
+  const battingKey = match.batting_team_key;
+  const striker = matchPlayers.find((item) => item.id === match.striker_id) ?? null;
+  const nonStriker = matchPlayers.find((item) => item.id === match.non_striker_id) ?? null;
+  const bowler = matchPlayers.find((item) => item.id === match.bowler_id) ?? null;
+  const crr = runRate(match.runs, match.legal_balls);
+  const isChase = match.current_innings === 2 && match.target !== null;
+  const totalBalls = match.total_overs * 6;
+  const runsNeeded = match.target ? Math.max(0, match.target - match.runs) : 0;
+  const ballsLeft = Math.max(0, totalBalls - match.legal_balls);
+  const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
+  const isCompleted = match.status === "completed";
+
+  const handleShare = () => {
+    const overs = `${getOvers(match.legal_balls)}/${match.total_overs} ov`;
+    const chaseLine = isChase && !isCompleted ? ` · need ${runsNeeded} in ${ballsLeft}` : "";
+    const summary = isCompleted && match.result_note ? ` · ${match.result_note}` : "";
+    const text = `🏏 ${match.title} — ${teamLabel(battingKey)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
+      crr,
+    )}${chaseLine}${summary} · Cricket Mania`;
+    void shareContent({ title: match.title, text }, onShare);
+  };
+
   return (
     <section className="stack">
+      <div className="innings-banner">
+        <span>{isCompleted ? "Result" : `Innings ${match.current_innings}`}</span>
+        <span>{teamLabel(battingKey)} batting</span>
+      </div>
+
       <div className="score-hero">
-        <span>
-          {match.batting_team} vs {match.bowling_team}
-        </span>
+        <span>{match.title}</span>
         <strong>
           {match.runs}/{match.wickets}
         </strong>
         <small>
-          {getOvers(match.legal_balls)} overs · {match.status}
+          {getOvers(match.legal_balls)}/{match.total_overs} overs
         </small>
+        <div className="rate-badges">
+          <span className="rate-badge">
+            <Gauge size={13} /> CRR {formatRate(crr)}
+          </span>
+          {isChase && !isCompleted && (
+            <span className="rate-badge accent">
+              <Target size={13} /> RRR {formatRate(rrr)}
+            </span>
+          )}
+        </div>
       </div>
 
-      <div className="crease-grid">
-        <PlayerStat label="Striker" value={match.striker_name ?? "Set by admin"} highlight />
-        <PlayerStat label="Non-striker" value={match.non_striker_name ?? "Set by admin"} />
-        <PlayerStat label="Bowler" value={match.bowler_name ?? "Set by admin"} />
-      </div>
+      {isCompleted && match.result_note && <div className="result-banner">{match.result_note}</div>}
+
+      {isChase && !isCompleted && (
+        <div className="chase-strip">
+          <span>Target {match.target}</span>
+          <strong>
+            Need {runsNeeded} in {ballsLeft} balls
+          </strong>
+        </div>
+      )}
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>At the crease</h3>
+          <span>{match.current_innings === 1 ? "1st innings" : "2nd innings"}</span>
+        </div>
+        <div className="crease-list">
+          <BatterRow label="Striker" player={striker} onStrike />
+          <BatterRow label="Non-striker" player={nonStriker} />
+          <BowlerRow player={bowler} />
+        </div>
+      </section>
 
       <section className="panel">
         <div className="panel-title">
@@ -970,6 +1490,11 @@ function ScoreboardView({
         </div>
         <BallStrip deliveries={deliveries} />
       </section>
+
+      <button className="secondary-action share-action" onClick={handleShare}>
+        <Share2 size={18} />
+        Share live score
+      </button>
 
       <section className="panel">
         <div className="panel-title">
@@ -981,7 +1506,7 @@ function ScoreboardView({
             <button className={item.id === match.id ? "selected" : ""} key={item.id} onClick={() => onSelectMatch(item.id)}>
               <span>
                 <strong>{item.title}</strong>
-                <small>{formatDate(item.created_at)}</small>
+                <small>{item.result_note ?? formatDate(item.created_at)}</small>
               </span>
               <b>
                 {item.runs}/{item.wickets}
@@ -994,23 +1519,77 @@ function ScoreboardView({
   );
 }
 
+function BatterRow({ label, player, onStrike = false }: { label: string; player: MatchPlayer | null; onStrike?: boolean }) {
+  return (
+    <div className={`crease-row ${onStrike ? "on-strike" : ""}`}>
+      <div>
+        <small>{label}</small>
+        <strong>
+          {player ? player.display_name : "—"}
+          {onStrike && player ? " *" : ""}
+        </strong>
+      </div>
+      <div className="crease-figures">
+        <strong>
+          {player ? player.runs_scored : 0}
+          <span> ({player ? player.balls_faced : 0})</span>
+        </strong>
+        <small>SR {formatRate(strikeRate(player?.runs_scored ?? 0, player?.balls_faced ?? 0))}</small>
+      </div>
+    </div>
+  );
+}
+
+function BowlerRow({ player }: { player: MatchPlayer | null }) {
+  return (
+    <div className="crease-row bowler-row">
+      <div>
+        <small>Bowler</small>
+        <strong>{player ? player.display_name : "—"}</strong>
+      </div>
+      <div className="crease-figures">
+        <strong>
+          {getOvers(player?.balls_bowled ?? 0)}-{player?.runs_conceded ?? 0}-{player?.wickets_taken ?? 0}
+        </strong>
+        <small>Econ {formatRate(runRate(player?.runs_conceded ?? 0, player?.balls_bowled ?? 0))}</small>
+      </div>
+    </div>
+  );
+}
+
 function PlayerView({
   profile,
   role,
-  match,
-  deliveries,
+  career,
   busy,
   onAvatarChange,
+  onShare,
   onRefresh,
 }: {
   profile: Profile | null;
   role: AppRole;
-  match: Match | null;
-  deliveries: Delivery[];
+  career: CareerStats | null;
   busy: boolean;
   onAvatarChange: (file: File) => void;
+  onShare: (message: string) => void;
   onRefresh: () => void;
 }) {
+  const played = career?.played ?? 0;
+  const wins = career?.wins ?? 0;
+  const losses = career?.losses ?? 0;
+  const winPct = played > 0 ? Math.round((wins / played) * 100) : 0;
+  const careerRuns = career?.runs ?? 0;
+  const careerBalls = career?.balls ?? 0;
+  const careerSR = strikeRate(careerRuns, careerBalls);
+  const careerRR = runRate(careerRuns, careerBalls);
+
+  const handleShareStats = () => {
+    const text = `🏏 ${profile?.display_name ?? "Cricket player"} on Cricket Mania — ${played} played, ${wins}W/${losses}L, ${careerRuns} runs at SR ${formatRate(
+      careerSR,
+    )}, RR ${formatRate(careerRR)}/over.`;
+    void shareContent({ title: "My Cricket Mania stats", text }, onShare);
+  };
+
   return (
     <section className="stack">
       <div className="hero-card">
@@ -1021,10 +1600,80 @@ function PlayerView({
         <ProfilePhoto profile={profile} size="large" />
       </div>
 
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Career record</h3>
+          <span>{role}</span>
+        </div>
+        <div className="career-grid">
+          <PlayerStat label="Played" value={String(played)} highlight />
+          <PlayerStat label="Won" value={String(wins)} />
+          <PlayerStat label="Lost" value={String(losses)} />
+          <PlayerStat label="Win %" value={`${winPct}%`} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Batting run rate</h3>
+          <Gauge size={16} />
+        </div>
+        <div className="career-grid">
+          <PlayerStat label="Runs" value={String(careerRuns)} highlight />
+          <PlayerStat label="Balls" value={String(careerBalls)} />
+          <PlayerStat label="Strike rate" value={formatRate(careerSR)} />
+          <PlayerStat label="Run rate" value={`${formatRate(careerRR)}/ov`} />
+        </div>
+        <div className="career-sub">
+          <span>{career?.fours ?? 0} fours</span>
+          <span>{career?.sixes ?? 0} sixes</span>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Bowling</h3>
+          <Target size={16} />
+        </div>
+        <div className="stat-grid">
+          <PlayerStat label="Wickets" value={String(career?.wicketsTaken ?? 0)} />
+          <PlayerStat label="Overs" value={getOvers(career?.ballsBowled ?? 0)} />
+          <PlayerStat label="Economy" value={formatRate(runRate(career?.runsConceded ?? 0, career?.ballsBowled ?? 0))} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Recent matches</h3>
+          <span>{career?.recent.length ?? 0}</span>
+        </div>
+        <div className="recent-list">
+          {(career?.recent ?? []).map((item) => (
+            <article className="recent-row" key={item.matchId}>
+              <div>
+                <strong>{item.title}</strong>
+                <small>
+                  {item.runs} ({item.balls}) · {formatDate(item.createdAt)}
+                </small>
+              </div>
+              <span className={`result-chip ${item.result}`}>
+                {item.result === "won"
+                  ? "Won"
+                  : item.result === "lost"
+                    ? "Lost"
+                    : item.result === "tie"
+                      ? "Tie"
+                      : "Live"}
+              </span>
+            </article>
+          ))}
+          {(career?.recent.length ?? 0) === 0 && <p className="empty-note">No matches played yet.</p>}
+        </div>
+      </section>
+
       <section className="panel profile-panel">
         <div className="panel-title">
           <h3>Your profile</h3>
-          <span>{role}</span>
         </div>
         <label className="change-photo">
           <ProfilePhoto profile={profile} />
@@ -1047,15 +1696,15 @@ function PlayerView({
         </label>
         <p>{profile?.email}</p>
         <SkillChips skills={profile?.skills ?? []} />
-        <button className="secondary-action" onClick={onRefresh}>
-          Refresh scoreboard
-        </button>
-      </section>
-
-      <section className="panel stat-grid">
-        <PlayerStat label="Current score" value={match ? `${match.runs}/${match.wickets}` : "No match"} />
-        <PlayerStat label="Overs" value={match ? getOvers(match.legal_balls) : "0.0"} />
-        <PlayerStat label="Last ball" value={deliveries[0]?.label ?? "-"} />
+        <div className="dual-actions">
+          <button className="secondary-action" onClick={onRefresh}>
+            Refresh
+          </button>
+          <button className="secondary-action share-action" onClick={handleShareStats}>
+            <Share2 size={18} />
+            Share my stats
+          </button>
+        </div>
       </section>
     </section>
   );
@@ -1181,19 +1830,144 @@ function CaptainTeamView({
   );
 }
 
-function AdminView({
+type CreaseValues = { striker_id?: string | null; non_striker_id?: string | null; bowler_id?: string | null };
+
+function UmpireView({
+  busy,
+  match,
+  deliveries,
+  matchPlayers,
+  onScore,
+  onReset,
+  onSetCrease,
+  onEndInnings,
+  onShare,
+  onGoToManage,
+}: {
+  busy: boolean;
+  match: Match | null;
+  deliveries: Delivery[];
+  matchPlayers: MatchPlayer[];
+  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onReset: () => void;
+  onSetCrease: (values: CreaseValues) => void;
+  onEndInnings: () => void;
+  onShare: (message: string) => void;
+  onGoToManage: () => void;
+}) {
+  if (!match) {
+    return (
+      <section className="panel empty-state">
+        <Gauge size={34} />
+        <h2>No match yet</h2>
+        <p>Go to Manage to create the match. You will land back here to score it live.</p>
+        <button className="primary-action" onClick={onGoToManage}>
+          <Plus size={19} />
+          Create a match
+        </button>
+      </section>
+    );
+  }
+
+  const isChase = match.current_innings === 2 && match.target !== null;
+  const totalBalls = match.total_overs * 6;
+  const runsNeeded = match.target ? Math.max(0, match.target - match.runs) : 0;
+  const ballsLeft = Math.max(0, totalBalls - match.legal_balls);
+  const crr = runRate(match.runs, match.legal_balls);
+  const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
+  const isCompleted = match.status === "completed";
+
+  const handleShare = () => {
+    const overs = `${getOvers(match.legal_balls)}/${match.total_overs} ov`;
+    const chaseLine = isChase && !isCompleted ? ` · need ${runsNeeded} in ${ballsLeft}` : "";
+    const summary = isCompleted && match.result_note ? ` · ${match.result_note}` : "";
+    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
+      crr,
+    )}${chaseLine}${summary} · Cricket Mania`;
+    void shareContent({ title: match.title, text }, onShare);
+  };
+
+  return (
+    <section className="stack">
+      <div className="innings-banner">
+        <span>{isCompleted ? "Result" : `Innings ${match.current_innings}`}</span>
+        <span>{teamLabel(match.batting_team_key)} batting</span>
+      </div>
+
+      <div className="score-hero">
+        <span>{match.title}</span>
+        <strong>
+          {match.runs}/{match.wickets}
+        </strong>
+        <small>
+          {getOvers(match.legal_balls)}/{match.total_overs} overs
+        </small>
+        <div className="rate-badges">
+          <span className="rate-badge">
+            <Gauge size={13} /> CRR {formatRate(crr)}
+          </span>
+          {isChase && !isCompleted && (
+            <span className="rate-badge accent">
+              <Target size={13} /> RRR {formatRate(rrr)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {isCompleted && match.result_note && <div className="result-banner">{match.result_note}</div>}
+
+      {isChase && !isCompleted && (
+        <div className="chase-strip">
+          <span>Target {match.target}</span>
+          <strong>
+            Need {runsNeeded} in {ballsLeft} balls
+          </strong>
+        </div>
+      )}
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Scoring deck</h3>
+          <span>Umpire</span>
+        </div>
+        <LiveScoring
+          busy={busy}
+          match={match}
+          matchPlayers={matchPlayers}
+          onScore={onScore}
+          onReset={onReset}
+          onSetCrease={onSetCrease}
+          onEndInnings={onEndInnings}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Recent balls</h3>
+          <span>{deliveries.length} shown</span>
+        </div>
+        <BallStrip deliveries={deliveries} />
+      </section>
+
+      <button className="secondary-action share-action" onClick={handleShare}>
+        <Share2 size={18} />
+        Share live score
+      </button>
+    </section>
+  );
+}
+
+function ManageView({
   busy,
   match,
   profiles,
   roles,
   currentUserId,
   onCreateMatch,
-  onScore,
-  onReset,
-  onStatus,
   onUpdatePlayer,
   onUpdateRole,
   onRefreshPlayers,
+  onGoToUmpire,
 }: {
   busy: boolean;
   match: Match | null;
@@ -1201,115 +1975,112 @@ function AdminView({
   roles: UserRole[];
   currentUserId: string;
   onCreateMatch: (formData: FormData) => void;
-  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
-  onReset: () => void;
-  onStatus: (status: MatchStatus) => void;
   onUpdatePlayer: (profileId: string, values: Partial<Pick<Profile, "display_name" | "phone" | "skills">>) => void;
   onUpdateRole: (profileId: string, nextRole: AppRole) => void;
   onRefreshPlayers: () => void;
+  onGoToUmpire: () => void;
 }) {
   const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
+  const [showNewMatch, setShowNewMatch] = useState(false);
+  const matchInProgress = match !== null && match.status !== "completed";
+  const showCreateForm = !matchInProgress || showNewMatch;
 
   return (
     <section className="stack">
-      <form
-        className="panel admin-form"
-        onSubmit={(event: FormEvent<HTMLFormElement>) => {
-          event.preventDefault();
-          onCreateMatch(new FormData(event.currentTarget));
-        }}
-      >
-        <div className="panel-title">
-          <h3>Create live match</h3>
-          <span>Admin</span>
+      {matchInProgress && (
+        <div className="hero-card">
+          <div>
+            <p className="eyebrow">Live match</p>
+            <h2>{match!.title}</h2>
+            <p className="muted-text" style={{ marginTop: 6, color: "rgba(255,255,255,0.75)" }}>
+              {match!.runs}/{match!.wickets} · {getOvers(match!.legal_balls)}/{match!.total_overs} ov
+            </p>
+          </div>
+          <button className="secondary-action accent" onClick={onGoToUmpire}>
+            <Gauge size={18} />
+            Score
+          </button>
         </div>
-        <input name="title" placeholder="Sunday Turf Match" />
-        <input name="venue" placeholder="Local Turf" />
-        <select name="teamSize" defaultValue="6">
-          {TEAM_SIZES.map((size) => (
-            <option value={size} key={size}>
-              {size}v{size}
-            </option>
-          ))}
-        </select>
-        <div className="split-inputs">
-          <select name="captainAId" defaultValue="">
-            <option value="">Team A captain</option>
-            {profiles.map((player) => (
-              <option value={player.id} key={player.id}>
-                {player.display_name}
-              </option>
-            ))}
-          </select>
-          <select name="captainBId" defaultValue="">
-            <option value="">Team B captain</option>
-            {profiles.map((player) => (
-              <option value={player.id} key={player.id}>
-                {player.display_name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="split-inputs">
-          <input name="striker" placeholder="Striker" />
-          <input name="nonStriker" placeholder="Non-striker" />
-        </div>
-        <input name="bowler" placeholder="Bowler" />
-        <button className="primary-action" disabled={busy}>
-          <Plus size={19} />
-          Create match
-        </button>
-      </form>
+      )}
 
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Live scoring</h3>
-          <span>{match ? `${match.runs}/${match.wickets}` : "No match"}</span>
-        </div>
-        {match ? (
-          <>
-            <div className="run-grid">
-              {[0, 1, 2, 3, 4, 6].map((run) => (
-                <button key={run} disabled={busy} onClick={() => onScore(run)}>
-                  {run}
-                </button>
+      {showCreateForm ? (
+        <form
+          className="panel admin-form"
+          onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            onCreateMatch(new FormData(event.currentTarget));
+            setShowNewMatch(false);
+          }}
+        >
+          <div className="panel-title">
+            <h3>{matchInProgress ? "Start another match" : "Create match"}</h3>
+            <span>Admin</span>
+          </div>
+          <input name="title" placeholder="Sunday Turf Match" />
+          <input name="venue" placeholder="Local Turf" />
+          <div className="split-inputs">
+            <label className="field">
+              <span>Team size</span>
+              <select name="teamSize" defaultValue="6">
+                {TEAM_SIZES.map((size) => (
+                  <option value={size} key={size}>
+                    {size}v{size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Overs / innings</span>
+              <input name="totalOvers" type="number" min={1} max={50} defaultValue={6} />
+            </label>
+          </div>
+          <label className="field">
+            <span>Bats first</span>
+            <select name="firstBatting" defaultValue="a">
+              <option value="a">Team A</option>
+              <option value="b">Team B</option>
+            </select>
+          </label>
+          <div className="split-inputs">
+            <select name="captainAId" defaultValue="">
+              <option value="">Team A captain</option>
+              {profiles.map((player) => (
+                <option value={player.id} key={player.id}>
+                  {player.display_name}
+                </option>
               ))}
-            </div>
-            <div className="extras-grid">
-              <button disabled={busy} onClick={() => onScore(0, { extra: "WD" })}>
-                Wide
+            </select>
+            <select name="captainBId" defaultValue="">
+              <option value="">Team B captain</option>
+              {profiles.map((player) => (
+                <option value={player.id} key={player.id}>
+                  {player.display_name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="dual-actions">
+            <button type="submit" className="primary-action" disabled={busy}>
+              <Plus size={19} />
+              Create match
+            </button>
+            {matchInProgress && (
+              <button type="button" className="secondary-action" onClick={() => setShowNewMatch(false)}>
+                Cancel
               </button>
-              <button disabled={busy} onClick={() => onScore(0, { extra: "NB" })}>
-                No ball
-              </button>
-              <button disabled={busy} onClick={() => onScore(0, { extra: "B" })}>
-                Bye
-              </button>
-              <button disabled={busy} onClick={() => onScore(0, { extra: "LB" })}>
-                Leg bye
-              </button>
-              <button className="danger" disabled={busy} onClick={() => onScore(0, { wicket: true })}>
-                Wicket
-              </button>
-            </div>
-            <div className="dual-actions">
-              <button className="secondary-action" disabled={busy} onClick={() => onStatus(match.status === "live" ? "completed" : "live")}>
-                {match.status === "live" ? "Complete" : "Go live"}
-              </button>
-              <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
-                <RotateCcw size={18} />
-                Reset
-              </button>
-            </div>
-          </>
-        ) : (
-          <p className="empty-note">Create a match first.</p>
-        )}
-      </section>
+            )}
+          </div>
+        </form>
+      ) : (
+        <button className="secondary-action share-action" onClick={() => setShowNewMatch(true)}>
+          <Plus size={18} />
+          Start a new match
+        </button>
+      )}
 
       <section className="panel">
         <div className="panel-title">
-          <h3>Manage players</h3>
+          <h3>Player accounts</h3>
           <button className="tiny-action" onClick={onRefreshPlayers}>
             Refresh
           </button>
@@ -1329,6 +2100,171 @@ function AdminView({
         </div>
       </section>
     </section>
+  );
+}
+
+function LiveScoring({
+  busy,
+  match,
+  matchPlayers,
+  onScore,
+  onReset,
+  onSetCrease,
+  onEndInnings,
+}: {
+  busy: boolean;
+  match: Match;
+  matchPlayers: MatchPlayer[];
+  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onReset: () => void;
+  onSetCrease: (values: CreaseValues) => void;
+  onEndInnings: () => void;
+}) {
+  const battingPlayers = matchPlayers.filter((item) => item.team_key === match.batting_team_key);
+  const bowlingPlayers = matchPlayers.filter((item) => item.team_key === otherTeam(match.batting_team_key));
+  const battingSquad = battingPlayers.length;
+  const creaseReady = Boolean(match.striker_id && match.bowler_id);
+  const totalBalls = match.total_overs * 6;
+  const allOut = battingSquad > 0 && match.wickets >= battingSquad - 1;
+  const oversDone = match.legal_balls >= totalBalls;
+  const inningsOver = allOut || oversDone;
+  const isChase = match.current_innings === 2 && match.target !== null;
+
+  if (match.status === "completed") {
+    return (
+      <div className="scoring-complete">
+        <p className="result-banner">{match.result_note ?? "Match complete."}</p>
+        <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
+          <RotateCcw size={18} />
+          Reset match
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="scoring-status">
+        <span>Innings {match.current_innings}</span>
+        <span>{teamLabel(match.batting_team_key)} batting</span>
+        {isChase && <span>Target {match.target}</span>}
+      </div>
+
+      {battingSquad === 0 ? (
+        <p className="empty-note">Build the squads first — captains add players on the Team tab.</p>
+      ) : (
+        <>
+          <div className="crease-selectors">
+            <label className="field">
+              <span>Striker</span>
+              <select
+                value={match.striker_id ?? ""}
+                disabled={busy}
+                onChange={(event) => onSetCrease({ striker_id: event.target.value || null })}
+              >
+                <option value="">Pick striker</option>
+                {battingPlayers.map((player) => (
+                  <option value={player.id} key={player.id} disabled={player.is_out || player.id === match.non_striker_id}>
+                    {player.display_name}
+                    {player.is_out ? " (out)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Non-striker</span>
+              <select
+                value={match.non_striker_id ?? ""}
+                disabled={busy}
+                onChange={(event) => onSetCrease({ non_striker_id: event.target.value || null })}
+              >
+                <option value="">Pick non-striker</option>
+                {battingPlayers.map((player) => (
+                  <option value={player.id} key={player.id} disabled={player.is_out || player.id === match.striker_id}>
+                    {player.display_name}
+                    {player.is_out ? " (out)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Bowler</span>
+              <select
+                value={match.bowler_id ?? ""}
+                disabled={busy}
+                onChange={(event) => onSetCrease({ bowler_id: event.target.value || null })}
+              >
+                <option value="">Pick bowler</option>
+                {bowlingPlayers.map((player) => (
+                  <option value={player.id} key={player.id}>
+                    {player.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {!creaseReady && <p className="empty-note">Pick a striker and a bowler to start scoring.</p>}
+
+          {creaseReady && match.striker_id && match.non_striker_id && (
+            <button
+              type="button"
+              className="tiny-action swap-strike"
+              disabled={busy}
+              onClick={() =>
+                onSetCrease({ striker_id: match.non_striker_id, non_striker_id: match.striker_id })
+              }
+            >
+              <RotateCcw size={14} />
+              Swap strike
+            </button>
+          )}
+
+          <div className="run-grid">
+            {[0, 1, 2, 3, 4, 6].map((run) => (
+              <button key={run} disabled={busy || !creaseReady} onClick={() => onScore(run)}>
+                {run}
+              </button>
+            ))}
+          </div>
+          <div className="extras-grid">
+            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "WD" })}>
+              Wide
+            </button>
+            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "NB" })}>
+              No ball
+            </button>
+            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "B" })}>
+              Bye
+            </button>
+            <button disabled={busy || !creaseReady} onClick={() => onScore(0, { extra: "LB" })}>
+              Leg bye
+            </button>
+            <button className="danger" disabled={busy || !creaseReady} onClick={() => onScore(0, { wicket: true })}>
+              Wicket
+            </button>
+          </div>
+
+          {inningsOver && (
+            <p className="empty-note">
+              {allOut ? "All out." : "Overs complete."}{" "}
+              {match.current_innings === 1 ? "End the innings." : "End the match."}
+            </p>
+          )}
+        </>
+      )}
+
+      <div className="dual-actions">
+        <button className={`secondary-action ${inningsOver ? "accent" : ""}`} disabled={busy} onClick={onEndInnings}>
+          <Flag size={18} />
+          {match.current_innings === 1 ? "End innings" : "End match"}
+        </button>
+        <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
+          <RotateCcw size={18} />
+          Reset
+        </button>
+      </div>
+    </>
   );
 }
 

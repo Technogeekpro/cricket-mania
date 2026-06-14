@@ -1,5 +1,7 @@
 export type AppRole = "player" | "captain" | "admin";
 export type MatchStatus = "setup" | "live" | "completed";
+export type TeamKey = "a" | "b";
+export type WinnerTeam = "a" | "b" | "tie";
 
 export type Profile = {
   id: string;
@@ -37,6 +39,19 @@ export type Match = {
   captain_a_id: string | null;
   captain_b_id: string | null;
   created_by: string | null;
+  total_overs: number;
+  current_innings: number;
+  first_batting_team: TeamKey;
+  batting_team_key: TeamKey;
+  target: number | null;
+  innings1_runs: number;
+  innings1_wickets: number;
+  innings1_balls: number;
+  striker_id: string | null;
+  non_striker_id: string | null;
+  bowler_id: string | null;
+  winner_team: WinnerTeam | null;
+  result_note: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -50,6 +65,9 @@ export type Delivery = {
   wicket: boolean;
   extra: "WD" | "NB" | "B" | "LB" | null;
   ball_index: number;
+  innings: number;
+  striker_id: string | null;
+  bowler_id: string | null;
   created_by: string | null;
   created_at: string;
 };
@@ -63,6 +81,15 @@ export type MatchPlayer = {
   is_captain: boolean;
   batting_order: number | null;
   skills: string[];
+  runs_scored: number;
+  balls_faced: number;
+  fours: number;
+  sixes: number;
+  is_out: boolean;
+  dismissal: string | null;
+  balls_bowled: number;
+  runs_conceded: number;
+  wickets_taken: number;
   created_at: string;
 };
 
