@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
+import grassGroundLineupUrl from "./assets/grass-ground-lineup.jpg";
 import { supabase } from "./lib/supabase";
 import type { AppRole, Delivery, Match, MatchPlayer, Profile, TeamKey, UserRole, WinnerTeam } from "./lib/database.types";
 
@@ -53,6 +54,8 @@ type CareerStats = {
   runsConceded: number;
   recent: CareerMatch[];
 };
+
+type LineupGroup = "WICKET-KEEPERS" | "BATTERS" | "ALL-ROUNDERS" | "BOWLERS";
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
 const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
@@ -93,6 +96,32 @@ const teamLogoPath = (key: TeamKey, match: Match) => (key === "a" ? match.team_a
 const matchResultNote = (match: Match) =>
   match.result_note?.replace(/^Team A/, teamLabel("a", match)).replace(/^Team B/, teamLabel("b", match)) ?? null;
 const otherTeam = (key: TeamKey): TeamKey => (key === "a" ? "b" : "a");
+
+const LINEUP_GROUPS: LineupGroup[] = ["WICKET-KEEPERS", "BATTERS", "ALL-ROUNDERS", "BOWLERS"];
+
+const playerSkillText = (skills: string[]) => (skills.length > 0 ? skills.join(" · ") : "Player");
+
+const shortPlayerName = (name: string) => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) {
+    return name;
+  }
+  return `${parts[0].slice(0, 1)} ${parts.slice(1).join(" ")}`;
+};
+
+const getLineupGroup = (skills: string[]): LineupGroup => {
+  const normalized = skills.join(" ").toLowerCase();
+  if (/\b(wk|keeper|wicket)\b/.test(normalized)) {
+    return "WICKET-KEEPERS";
+  }
+  if (/\b(all|all-rounder|allrounder|ar)\b/.test(normalized)) {
+    return "ALL-ROUNDERS";
+  }
+  if (/\b(bowl|bowler)\b/.test(normalized)) {
+    return "BOWLERS";
+  }
+  return "BATTERS";
+};
 
 const playerImpact = (player: MatchPlayer) =>
   player.runs_scored +
@@ -292,7 +321,7 @@ export function App() {
   const isCaptain = role === "captain";
   const captainTeamKey =
     activeMatch?.captain_a_id === session?.user.id ? "a" : activeMatch?.captain_b_id === session?.user.id ? "b" : null;
-  const showTeamTab = isCaptain || Boolean(captainTeamKey);
+  const showTeamTab = !isAdmin && (isCaptain || Boolean(captainTeamKey));
 
   useEffect(() => {
     let mounted = true;
@@ -1880,6 +1909,8 @@ function CaptainTeamView({
         </button>
       </form>
 
+      <CaptainLineupGround match={match} players={teamRows} teamKey={teamKey} />
+
       <section className="panel team-add-form">
         <div className="panel-title">
           <h3>Draft players</h3>
@@ -1905,7 +1936,10 @@ function CaptainTeamView({
                 <ProfilePhoto profile={player} />
                 <div>
                   <strong>{player.display_name}</strong>
-                  <small>{player.is_banned ? "Banned" : picked ? `Picked by ${teamLabel(picked.team_key === "b" ? "b" : "a", match)}` : "Available"}</small>
+                  <small>
+                    {playerSkillText(player.skills)} ·{" "}
+                    {player.is_banned ? "Banned" : picked ? `Picked by ${teamLabel(picked.team_key === "b" ? "b" : "a", match)}` : "Available"}
+                  </small>
                 </div>
                 <button className="tiny-action" disabled={disabled} onClick={() => onAddPlayer(player.id)}>
                   Add
@@ -1935,6 +1969,51 @@ function CaptainTeamView({
           {teamRows.length === 0 && <p className="empty-note">No players picked yet.</p>}
         </div>
       </section>
+    </section>
+  );
+}
+
+function CaptainLineupGround({
+  match,
+  players,
+  teamKey,
+}: {
+  match: Match;
+  players: MatchPlayer[];
+  teamKey: TeamKey;
+}) {
+  const currentTeamName = teamLabel(teamKey, match);
+  const groupedPlayers = LINEUP_GROUPS.map((group) => ({
+    group,
+    players: players.filter((player) => getLineupGroup(player.skills) === group),
+  }));
+
+  return (
+    <section className="lineup-card" aria-label={`${currentTeamName} lineup`}>
+      <div className="lineup-title">
+        <div>
+          <span>Lineup preview</span>
+          <strong>{currentTeamName}</strong>
+        </div>
+        <small>{players.length}/{match.team_size}</small>
+      </div>
+      <div className="lineup-ground" style={{ backgroundImage: `url(${grassGroundLineupUrl})` }}>
+        {players.length === 0 && <p className="lineup-empty">Add players to build your ground view.</p>}
+        {groupedPlayers.map(({ group, players: groupPlayers }) => (
+          <div className={`lineup-group lineup-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`} key={group}>
+            <span className="lineup-group-label">{group}</span>
+            <div className="lineup-slots">
+              {groupPlayers.map((player) => (
+                <div className="lineup-player" key={player.id}>
+                  <MatchPlayerPhoto player={player} />
+                  <strong>{shortPlayerName(player.display_name)}</strong>
+                  <small>{player.is_captain ? "Captain" : playerSkillText(player.skills).split(" · ")[0]}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
