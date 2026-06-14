@@ -438,6 +438,79 @@ textarea:focus {
   z-index: 1;
 }
 
+.team-vs-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-sm);
+}
+
+.team-badge {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  text-align: center;
+}
+
+.team-badge strong {
+  width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-logo {
+  width: 54px;
+  height: 54px;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  color: var(--brand-darker);
+  background: linear-gradient(145deg, var(--brand-bg-strong), var(--surface));
+  box-shadow: var(--shadow-sm);
+  font-family: "Bebas Neue", Inter, sans-serif;
+  font-size: 23px;
+  letter-spacing: 0.8px;
+}
+
+.team-logo.large {
+  width: 84px;
+  height: 84px;
+  position: relative;
+  z-index: 1;
+  border-color: rgba(255, 255, 255, 0.9);
+  font-size: 34px;
+}
+
+.team-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vs-chip {
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  color: #4a2f00;
+  background: var(--gold);
+  font-family: "Bebas Neue", Inter, sans-serif;
+  font-size: 20px;
+  letter-spacing: 1px;
+}
+
 /* ====== SCORE HERO ====== */
 
 .innings-banner {
@@ -963,6 +1036,13 @@ textarea:focus {
   font-size: 32px;
 }
 
+.profile-photo.small {
+  width: 42px;
+  height: 42px;
+  font-size: 18px;
+  border-width: 1px;
+}
+
 .auth-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1346,10 +1426,76 @@ textarea:focus {
 /* ====== TEAMS / PLAYERS ====== */
 
 .admin-player-list,
+.team-brand-form,
 .team-add-form,
 .team-player-list {
   display: grid;
   gap: 10px;
+}
+
+.team-logo-picker {
+  grid-template-columns: 58px 1fr;
+}
+
+.ranking-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ranking-row {
+  display: grid;
+  grid-template-columns: 38px 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+
+.rank-number {
+  color: var(--brand);
+  font-family: "Bebas Neue", Inter, sans-serif;
+  font-size: 20px;
+  letter-spacing: 0.7px;
+}
+
+.ranking-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.ranking-main strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-main small,
+.ranking-stats small {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ranking-stats {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  text-align: right;
+}
+
+.ranking-stats strong {
+  color: var(--ink);
+  font-family: "Bebas Neue", Inter, sans-serif;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.8px;
 }
 
 .team-player-row {

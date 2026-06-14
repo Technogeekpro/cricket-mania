@@ -54,6 +54,7 @@ type CareerStats = {
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
 const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
 const AVATAR_BUCKET = "profile-photos";
+const TEAM_LOGOS_BUCKET = "team-logos";
 const PENDING_AVATAR_KEY = "cricket-mania-pending-avatar-v1";
 
 const getAuthRedirectUrl = () => {
@@ -82,8 +83,21 @@ const requiredRunRate = (target: number, runs: number, totalBalls: number, legal
   return ballsLeft > 0 ? ((target - runs) * 6) / ballsLeft : 0;
 };
 
-const teamLabel = (key: TeamKey) => (key === "a" ? "Team A" : "Team B");
+const teamLabel = (key: TeamKey, match?: Match | null) =>
+  match ? (key === "a" ? match.team_a_name : match.team_b_name) || (key === "a" ? "Team A" : "Team B") : key === "a" ? "Team A" : "Team B";
+const teamLogoUrl = (key: TeamKey, match: Match) => (key === "a" ? match.team_a_logo_url : match.team_b_logo_url);
+const teamLogoPath = (key: TeamKey, match: Match) => (key === "a" ? match.team_a_logo_path : match.team_b_logo_path);
+const matchResultNote = (match: Match) =>
+  match.result_note?.replace(/^Team A/, teamLabel("a", match)).replace(/^Team B/, teamLabel("b", match)) ?? null;
 const otherTeam = (key: TeamKey): TeamKey => (key === "a" ? "b" : "a");
+
+const playerImpact = (player: MatchPlayer) =>
+  player.runs_scored +
+  player.fours * 2 +
+  player.sixes * 3 +
+  player.wickets_taken * 25 +
+  Math.floor(player.balls_bowled / 6) * 2 -
+  Math.floor(player.runs_conceded / 12);
 
 async function shareContent(
   payload: { title: string; text: string; url?: string },
@@ -205,6 +219,22 @@ async function uploadAvatarBlob(userId: string, blob: Blob, oldPath?: string | n
   }
 
   return profile as Profile;
+}
+
+async function uploadTeamLogoBlob(userId: string, teamKey: TeamKey, blob: Blob) {
+  const path = `${userId}/team-${teamKey}-${Date.now()}.webp`;
+  const { error: uploadError } = await supabase.storage.from(TEAM_LOGOS_BUCKET).upload(path, blob, {
+    contentType: "image/webp",
+    cacheControl: "31536000",
+    upsert: false,
+  });
+
+  if (uploadError) {
+    throw uploadError;
+  }
+
+  const { data } = supabase.storage.from(TEAM_LOGOS_BUCKET).getPublicUrl(path);
+  return { path, publicUrl: `${data.publicUrl}?v=${Date.now()}` };
 }
 
 function formatErrorMessage(error: unknown, fallback: string): string {
@@ -625,7 +655,7 @@ export function App() {
       return;
     }
 
-    setNotice(`Match created. ${totalOvers} overs each, ${teamLabel(firstBatting)} bats first.`);
+    setNotice(`Match created. ${totalOvers} overs each, ${teamLabel(firstBatting, data as Match)} bats first.`);
     setActiveMatchId(data.id);
 
     const captainRows = [
@@ -658,6 +688,7 @@ export function App() {
           team_key,
           is_captain: true,
           skills: captain.skills,
+          avatar_url: captain.avatar_url,
         })),
       );
 
@@ -796,14 +827,14 @@ export function App() {
     if (second > first) {
       winner = chasingTeam;
       const wicketsLeft = Math.max(0, chasingSquad - 1 - activeMatch.wickets);
-      note = `${teamLabel(chasingTeam)} won by ${wicketsLeft} wicket${wicketsLeft === 1 ? "" : "s"}`;
+      note = `${teamLabel(chasingTeam, activeMatch)} won by ${wicketsLeft} wicket${wicketsLeft === 1 ? "" : "s"}`;
     } else if (second === first) {
       winner = "tie";
       note = "Match tied";
     } else {
       winner = defendingTeam;
       const margin = first - second;
-      note = `${teamLabel(defendingTeam)} won by ${margin} run${margin === 1 ? "" : "s"}`;
+      note = `${teamLabel(defendingTeam, activeMatch)} won by ${margin} run${margin === 1 ? "" : "s"}`;
     }
 
     setBusy(true);
@@ -917,6 +948,7 @@ export function App() {
       team_key: teamKey,
       is_captain: false,
       skills: player.skills,
+      avatar_url: player.avatar_url,
     });
 
     if (error) {
@@ -925,6 +957,45 @@ export function App() {
     }
 
     await loadMatchPlayers(activeMatch.id);
+  }
+
+  async function updateTeamBranding(teamKey: TeamKey, values: { name: string; logoFile?: File | null }) {
+    if (!activeMatch || !session?.user) {
+      return;
+    }
+
+    const oldLogoPath = teamLogoPath(teamKey, activeMatch);
+    setBusy(true);
+    try {
+      let logo: { path: string; publicUrl: string } | null = null;
+      if (values.logoFile) {
+        const blob = await compressSquareAvatar(values.logoFile);
+        logo = await uploadTeamLogoBlob(session.user.id, teamKey, blob);
+      }
+
+      const { error } = await supabase.rpc("update_match_team_branding", {
+        p_match_id: activeMatch.id,
+        p_team_key: teamKey,
+        p_team_name: values.name,
+        p_logo_url: logo?.publicUrl ?? null,
+        p_logo_path: logo?.path ?? null,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (logo && oldLogoPath && oldLogoPath !== logo.path) {
+        await supabase.storage.from(TEAM_LOGOS_BUCKET).remove([oldLogoPath]);
+      }
+
+      setNotice("Team branding updated.");
+      await loadMatches();
+    } catch (error) {
+      setNotice(formatErrorMessage(error, "Unable to update team branding."));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function removeTeamPlayer(rowId: string) {
@@ -1084,6 +1155,7 @@ export function App() {
               teamKey={captainTeamKey}
               onAddPlayer={addTeamPlayer}
               onRemovePlayer={removeTeamPlayer}
+              onUpdateBranding={updateTeamBranding}
               onRefresh={() => {
                 void loadPlayerProfiles(isAdmin);
                 if (activeMatch?.id) {
@@ -1346,12 +1418,16 @@ function ScoreboardView({
   const ballsLeft = Math.max(0, totalBalls - match.legal_balls);
   const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
   const isCompleted = match.status === "completed";
+  const displayResult = matchResultNote(match);
+  const rankings = [...matchPlayers]
+    .filter((player) => player.team_key === "a" || player.team_key === "b")
+    .sort((a, b) => playerImpact(b) - playerImpact(a));
 
   const handleShare = () => {
     const overs = `${getOvers(match.legal_balls)}/${match.total_overs} ov`;
     const chaseLine = isChase && !isCompleted ? ` · need ${runsNeeded} in ${ballsLeft}` : "";
-    const summary = isCompleted && match.result_note ? ` · ${match.result_note}` : "";
-    const text = `🏏 ${match.title} — ${teamLabel(battingKey)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
+    const summary = isCompleted && displayResult ? ` · ${displayResult}` : "";
+    const text = `🏏 ${match.title} — ${teamLabel(battingKey, match)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
       crr,
     )}${chaseLine}${summary} · Cricket Mania`;
     void shareContent({ title: match.title, text }, onShare);
@@ -1359,9 +1435,11 @@ function ScoreboardView({
 
   return (
     <section className="stack">
+      <TeamVsStrip match={match} />
+
       <div className="innings-banner">
         <span>{isCompleted ? "Result" : `Innings ${match.current_innings}`}</span>
-        <span>{teamLabel(battingKey)} batting</span>
+        <span>{teamLabel(battingKey, match)} batting</span>
       </div>
 
       <div className="score-hero">
@@ -1384,7 +1462,7 @@ function ScoreboardView({
         </div>
       </div>
 
-      {isCompleted && match.result_note && <div className="result-banner">{match.result_note}</div>}
+      {isCompleted && displayResult && <div className="result-banner">{displayResult}</div>}
 
       {isChase && !isCompleted && (
         <div className="chase-strip">
@@ -1415,6 +1493,14 @@ function ScoreboardView({
         <BallStrip deliveries={deliveries} />
       </section>
 
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Player rankings</h3>
+          <span>{rankings.length}</span>
+        </div>
+        <PlayerRankings players={rankings} match={match} />
+      </section>
+
       <button className="secondary-action share-action" onClick={handleShare}>
         <Share2 size={18} />
         Share live score
@@ -1430,7 +1516,7 @@ function ScoreboardView({
             <button className={item.id === match.id ? "selected" : ""} key={item.id} onClick={() => onSelectMatch(item.id)}>
               <span>
                 <strong>{item.title}</strong>
-                <small>{item.result_note ?? formatDate(item.created_at)}</small>
+                <small>{matchResultNote(item) ?? formatDate(item.created_at)}</small>
               </span>
               <b>
                 {item.runs}/{item.wickets}
@@ -1440,6 +1526,55 @@ function ScoreboardView({
         </div>
       </section>
     </section>
+  );
+}
+
+function TeamVsStrip({ match }: { match: Match }) {
+  return (
+    <section className="team-vs-strip" aria-label="Teams">
+      <TeamBadge match={match} teamKey="a" />
+      <span className="vs-chip">VS</span>
+      <TeamBadge match={match} teamKey="b" />
+    </section>
+  );
+}
+
+function TeamBadge({ match, teamKey }: { match: Match; teamKey: TeamKey }) {
+  const logo = teamLogoUrl(teamKey, match);
+  const name = teamLabel(teamKey, match);
+
+  return (
+    <div className="team-badge">
+      <span className="team-logo">{logo ? <img src={logo} alt={`${name} logo`} /> : name.slice(0, 1)}</span>
+      <strong>{name}</strong>
+    </div>
+  );
+}
+
+function PlayerRankings({ players, match }: { players: MatchPlayer[]; match: Match }) {
+  if (players.length === 0) {
+    return <p className="empty-note">No player stats yet.</p>;
+  }
+
+  return (
+    <div className="ranking-list">
+      {players.map((player, index) => (
+        <article className="ranking-row" key={player.id}>
+          <span className="rank-number">#{index + 1}</span>
+          <MatchPlayerPhoto player={player} />
+          <div className="ranking-main">
+            <strong>{player.display_name}</strong>
+            <small>{teamLabel(player.team_key === "b" ? "b" : "a", match)}</small>
+          </div>
+          <div className="ranking-stats">
+            <strong>{playerImpact(player)}</strong>
+            <small>
+              {player.runs_scored}R · {player.wickets_taken}W · SR {formatRate(strikeRate(player.runs_scored, player.balls_faced))}
+            </small>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -1642,6 +1777,7 @@ function CaptainTeamView({
   teamKey,
   onAddPlayer,
   onRemovePlayer,
+  onUpdateBranding,
   onRefresh,
 }: {
   busy: boolean;
@@ -1651,6 +1787,7 @@ function CaptainTeamView({
   teamKey: "a" | "b" | null;
   onAddPlayer: (profileId: string) => void;
   onRemovePlayer: (rowId: string) => void;
+  onUpdateBranding: (teamKey: TeamKey, values: { name: string; logoFile?: File | null }) => void;
   onRefresh: () => void;
 }) {
   if (!match) {
@@ -1676,7 +1813,8 @@ function CaptainTeamView({
   const selectedProfileIds = new Set(matchPlayers.map((item) => item.profile_id).filter(Boolean));
   const teamRows = matchPlayers.filter((item) => item.team_key === teamKey);
   const availablePlayers = profiles.filter((item) => !selectedProfileIds.has(item.id));
-  const teamLabel = teamKey === "a" ? "Team A" : "Team B";
+  const currentTeamName = teamLabel(teamKey, match);
+  const currentTeamLogo = teamLogoUrl(teamKey, match);
   const isFull = teamRows.length >= match.team_size;
 
   return (
@@ -1684,12 +1822,46 @@ function CaptainTeamView({
       <div className="hero-card">
         <div>
           <p className="eyebrow">Captain mode</p>
-          <h2>{teamLabel}</h2>
+          <h2>{currentTeamName}</h2>
         </div>
-        <strong className="team-count">
-          {teamRows.length}/{match.team_size}
-        </strong>
+        <span className="team-logo large">{currentTeamLogo ? <img src={currentTeamLogo} alt={`${currentTeamName} logo`} /> : currentTeamName.slice(0, 1)}</span>
       </div>
+
+      <form
+        className="panel team-brand-form"
+        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          event.preventDefault();
+          const formData = new FormData(event.currentTarget);
+          const logoFile = formData.get("logoFile");
+          onUpdateBranding(teamKey, {
+            name: String(formData.get("teamName") ?? currentTeamName),
+            logoFile: logoFile instanceof File && logoFile.size > 0 ? logoFile : null,
+          });
+          const input = event.currentTarget.querySelector<HTMLInputElement>('input[name="logoFile"]');
+          if (input) input.value = "";
+        }}
+      >
+        <div className="panel-title">
+          <h3>Team identity</h3>
+          <span>{teamRows.length}/{match.team_size}</span>
+        </div>
+        <label className="field">
+          <span>Team name</span>
+          <input name="teamName" defaultValue={currentTeamName} placeholder="Team name" />
+        </label>
+        <label className="avatar-picker team-logo-picker">
+          <span className="team-logo">{currentTeamLogo ? <img src={currentTeamLogo} alt={`${currentTeamName} logo`} /> : <Camera size={24} />}</span>
+          <span>
+            Team logo
+            <small>1:1 square, compressed before upload</small>
+          </span>
+          <input name="logoFile" aria-label="Team logo" accept="image/png,image/jpeg,image/webp" type="file" />
+        </label>
+        <button className="primary-action" disabled={busy}>
+          <Camera size={18} />
+          Save team
+        </button>
+      </form>
 
       <form
         className="panel team-add-form"
@@ -1718,35 +1890,32 @@ function CaptainTeamView({
         </select>
         <button className="primary-action" disabled={busy || isFull || availablePlayers.length === 0}>
           <Plus size={19} />
-          Add to {teamLabel}
+          Add to {currentTeamName}
         </button>
       </form>
 
       <section className="panel">
         <div className="panel-title">
-          <h3>{teamLabel} squad</h3>
+          <h3>{currentTeamName} squad</h3>
           <span>{teamRows.length} picked</span>
         </div>
         <div className="team-player-list">
-          {teamRows.map((row) => {
-            const rowProfile = profiles.find((item) => item.id === row.profile_id) ?? null;
-            return (
-              <article className="team-player-row" key={row.id}>
-                <ProfilePhoto profile={rowProfile} />
-                <div>
-                  <strong>{row.display_name}</strong>
-                  <SkillChips skills={row.skills} />
-                </div>
-                {row.is_captain ? (
-                  <span className="captain-badge">Captain</span>
-                ) : (
-                  <button className="tiny-action danger-soft" disabled={busy} onClick={() => onRemovePlayer(row.id)}>
-                    Remove
-                  </button>
-                )}
-              </article>
-            );
-          })}
+          {teamRows.map((row) => (
+            <article className="team-player-row" key={row.id}>
+              <MatchPlayerPhoto player={row} />
+              <div>
+                <strong>{row.display_name}</strong>
+                <SkillChips skills={row.skills} />
+              </div>
+              {row.is_captain ? (
+                <span className="captain-badge">Captain</span>
+              ) : (
+                <button className="tiny-action danger-soft" disabled={busy} onClick={() => onRemovePlayer(row.id)}>
+                  Remove
+                </button>
+              )}
+            </article>
+          ))}
           {teamRows.length === 0 && <p className="empty-note">No players picked yet.</p>}
         </div>
       </section>
@@ -1802,12 +1971,13 @@ function UmpireView({
   const crr = runRate(match.runs, match.legal_balls);
   const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
   const isCompleted = match.status === "completed";
+  const displayResult = matchResultNote(match);
 
   const handleShare = () => {
     const overs = `${getOvers(match.legal_balls)}/${match.total_overs} ov`;
     const chaseLine = isChase && !isCompleted ? ` · need ${runsNeeded} in ${ballsLeft}` : "";
-    const summary = isCompleted && match.result_note ? ` · ${match.result_note}` : "";
-    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
+    const summary = isCompleted && displayResult ? ` · ${displayResult}` : "";
+    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key, match)} ${match.runs}/${match.wickets} (${overs}), CRR ${formatRate(
       crr,
     )}${chaseLine}${summary} · Cricket Mania`;
     void shareContent({ title: match.title, text }, onShare);
@@ -1817,7 +1987,7 @@ function UmpireView({
     <section className="stack">
       <div className="innings-banner">
         <span>{isCompleted ? "Result" : `Innings ${match.current_innings}`}</span>
-        <span>{teamLabel(match.batting_team_key)} batting</span>
+        <span>{teamLabel(match.batting_team_key, match)} batting</span>
       </div>
 
       <div className="score-hero">
@@ -1840,7 +2010,7 @@ function UmpireView({
         </div>
       </div>
 
-      {isCompleted && match.result_note && <div className="result-banner">{match.result_note}</div>}
+      {isCompleted && displayResult && <div className="result-banner">{displayResult}</div>}
 
       {isChase && !isCompleted && (
         <div className="chase-strip">
@@ -2064,7 +2234,7 @@ function LiveScoring({
   if (match.status === "completed") {
     return (
       <div className="scoring-complete">
-        <p className="result-banner">{match.result_note ?? "Match complete."}</p>
+        <p className="result-banner">{matchResultNote(match) ?? "Match complete."}</p>
         <div className="dual-actions">
           <button className="secondary-action" disabled={busy} onClick={onUndo}>
             <RotateCcw size={18} />
@@ -2083,7 +2253,7 @@ function LiveScoring({
     <>
       <div className="scoring-status">
         <span>Innings {match.current_innings}</span>
-        <span>{teamLabel(match.batting_team_key)} batting</span>
+        <span>{teamLabel(match.batting_team_key, match)} batting</span>
         {isChase && <span>Target {match.target}</span>}
       </div>
 
@@ -2275,6 +2445,16 @@ function ProfilePhoto({ profile, size = "normal" }: { profile: Profile | null; s
   return (
     <span className={`profile-photo ${size}`}>
       {profile?.avatar_url ? <img src={profile.avatar_url} alt={`${profile.display_name} profile`} /> : initial}
+    </span>
+  );
+}
+
+function MatchPlayerPhoto({ player }: { player: MatchPlayer }) {
+  const initial = player.display_name?.slice(0, 1).toUpperCase() || "P";
+
+  return (
+    <span className="profile-photo small">
+      {player.avatar_url ? <img src={player.avatar_url} alt={`${player.display_name} profile`} /> : initial}
     </span>
   );
 }

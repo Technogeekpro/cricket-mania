@@ -30,6 +30,12 @@ export type Match = {
   status: MatchStatus;
   batting_team: string;
   bowling_team: string;
+  team_a_name: string;
+  team_b_name: string;
+  team_a_logo_url: string | null;
+  team_b_logo_url: string | null;
+  team_a_logo_path: string | null;
+  team_b_logo_path: string | null;
   runs: number;
   wickets: number;
   legal_balls: number;
@@ -82,6 +88,7 @@ export type MatchPlayer = {
   is_captain: boolean;
   batting_order: number | null;
   skills: string[];
+  avatar_url: string | null;
   runs_scored: number;
   balls_faced: number;
   fours: number;
