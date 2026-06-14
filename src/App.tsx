@@ -1,415 +1,453 @@
 import {
-  Check,
-  ChevronRight,
+  Activity,
+  CheckCircle2,
   ClipboardList,
+  LogOut,
+  Mail,
+  Plus,
   RotateCcw,
   Shield,
   Swords,
   Trophy,
+  UserPlus,
   Users,
 } from "lucide-react";
-import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "./lib/supabase";
+import type { AppRole, Delivery, Match, MatchStatus, Profile, UserRole } from "./lib/database.types";
 
-type Skill = "Bat" | "Bowl" | "WK";
-type Screen = "setup" | "draft" | "teams" | "score";
-type TeamKey = "a" | "b";
+type Tab = "scoreboard" | "players" | "admin";
 type ExtraType = "WD" | "NB" | "B" | "LB";
 
-type Player = {
-  id: string;
-  name: string;
-  skills: Skill[];
-};
-
-type Delivery = {
-  id: string;
-  label: string;
-  runs: number;
-  legal: boolean;
-  wicket?: boolean;
-  extra?: ExtraType;
-};
-
-type ScoreState = {
-  battingTeam: TeamKey;
-  runs: number;
-  wickets: number;
-  legalBalls: number;
-  strikerId: string;
-  nonStrikerId: string;
-  bowlerId: string;
-  nextBatterIndex: number;
-  deliveries: Delivery[];
-};
-
-type AppState = {
-  screen: Screen;
-  playerText: string;
-  players: Player[];
-  teamSize: number;
-  captainAId: string;
-  captainBId: string;
-  teams: Record<TeamKey, string[]>;
-  currentPick: TeamKey;
-  score: ScoreState | null;
-};
-
-const starterNames = [
-  "Arjun",
-  "Sameer",
-  "Rohit",
-  "Vikash",
-  "Imran",
-  "Karan",
-  "Ravi",
-  "Nilesh",
-  "Deepak",
-  "Manoj",
-  "Amit",
-  "Faiz",
-];
-
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
-const STORAGE_KEY = "cricket-mania-mobile-state-v1";
-
-const skillPatterns: Skill[][] = [
-  ["Bat", "Bowl"],
-  ["Bat"],
-  ["Bowl", "Bat"],
-  ["Bat", "WK"],
-  ["Bowl"],
-  ["Bat", "Bowl"],
-  ["Bat"],
-  ["Bowl", "WK"],
-];
-
-const namesToPlayers = (text: string): Player[] => {
-  const names = text
-    .split(/\n|,/)
-    .map((name) => name.trim())
-    .filter(Boolean);
-
-  const uniqueNames = Array.from(new Set(names));
-
-  return uniqueNames.map((name, index) => ({
-    id: `player-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || index}-${index}`,
-    name,
-    skills: skillPatterns[index % skillPatterns.length],
-  }));
-};
-
-const makeDefaultState = (): AppState => {
-  const playerText = starterNames.join("\n");
-  const players = namesToPlayers(playerText);
-
-  return {
-    screen: "setup",
-    playerText,
-    players,
-    teamSize: 6,
-    captainAId: players[0]?.id ?? "",
-    captainBId: players[1]?.id ?? "",
-    teams: { a: [], b: [] },
-    currentPick: "a",
-    score: null,
-  };
-};
-
-const safeLoadState = (): AppState => {
-  if (typeof window === "undefined") {
-    return makeDefaultState();
-  }
-
-  try {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      return makeDefaultState();
-    }
-
-    const parsed = JSON.parse(saved) as AppState;
-    if (!Array.isArray(parsed.players) || parsed.players.length < 2) {
-      return makeDefaultState();
-    }
-
-    return parsed;
-  } catch {
-    return makeDefaultState();
-  }
-};
 
 const getOvers = (legalBalls: number) => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
-const otherTeam = (team: TeamKey): TeamKey => (team === "a" ? "b" : "a");
+
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 
 export function App() {
-  const [state, setState] = usePersistentState();
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [role, setRole] = useState<AppRole>("player");
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [roles, setRoles] = useState<UserRole[]>([]);
+  const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("scoreboard");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const playerMap = new Map(state.players.map((player) => [player.id, player]));
-  const captainA = playerMap.get(state.captainAId);
-  const captainB = playerMap.get(state.captainBId);
-  const teamsReady = state.teams.a.length === state.teamSize && state.teams.b.length === state.teamSize;
-  const draftStarted = state.teams.a.length > 0 || state.teams.b.length > 0;
-  const requiredPlayers = state.teamSize * 2;
-  const hasEnoughPlayers = state.players.length >= requiredPlayers;
-  const captainsReady = Boolean(captainA && captainB && state.captainAId !== state.captainBId);
-  const setupReady = hasEnoughPlayers && captainsReady;
+  const activeMatch = useMemo(
+    () => matches.find((match) => match.id === activeMatchId) ?? matches[0] ?? null,
+    [activeMatchId, matches],
+  );
 
-  function updatePlayersFromText() {
-    const players = namesToPlayers(state.playerText);
-    const nextCaptainA = players.find((player) => player.name === captainA?.name)?.id ?? players[0]?.id ?? "";
-    const nextCaptainB =
-      players.find((player) => player.name === captainB?.name && player.id !== nextCaptainA)?.id ??
-      players.find((player) => player.id !== nextCaptainA)?.id ??
-      "";
+  const isAdmin = role === "admin";
 
-    setState((current) => ({
-      ...current,
-      players,
-      captainAId: nextCaptainA,
-      captainBId: nextCaptainB,
-      teams: { a: [], b: [] },
-      currentPick: "a",
-      score: null,
-    }));
-  }
+  useEffect(() => {
+    let mounted = true;
 
-  function startDraft() {
-    if (!setupReady) {
-      return;
-    }
-
-    setState((current) => ({
-      ...current,
-      screen: "draft",
-      teams: {
-        a: [current.captainAId],
-        b: [current.captainBId],
-      },
-      currentPick: "a",
-      score: null,
-    }));
-  }
-
-  function pickPlayer(playerId: string) {
-    setState((current) => {
-      if (current.teams.a.includes(playerId) || current.teams.b.includes(playerId)) {
-        return current;
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) {
+        setSession(data.session);
+        setAuthLoading(false);
       }
-
-      const active = current.currentPick;
-      if (current.teams[active].length >= current.teamSize) {
-        return current;
-      }
-
-      const nextTeams = {
-        ...current.teams,
-        [active]: [...current.teams[active], playerId],
-      };
-      const nextTeam = otherTeam(active);
-      const nextPick = nextTeams[nextTeam].length < current.teamSize ? nextTeam : active;
-      const complete = nextTeams.a.length === current.teamSize && nextTeams.b.length === current.teamSize;
-
-      return {
-        ...current,
-        teams: nextTeams,
-        currentPick: nextPick,
-        screen: complete ? "teams" : current.screen,
-      };
     });
-  }
 
-  function removePick(team: TeamKey, playerId: string) {
-    if (playerId === state.captainAId || playerId === state.captainBId) {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setProfile(null);
+      setRole("player");
+      setNotice("");
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user) {
+      setMatches([]);
+      setDeliveries([]);
+      setProfiles([]);
+      setRoles([]);
       return;
     }
 
-    setState((current) => ({
-      ...current,
-      teams: {
-        ...current.teams,
-        [team]: current.teams[team].filter((id) => id !== playerId),
-      },
-      currentPick: team,
-      score: null,
-      screen: "draft",
-    }));
-  }
+    void loadAppData(session.user.id);
+  }, [session?.user]);
 
-  function startScoring() {
-    if (!teamsReady) {
+  useEffect(() => {
+    if (!session?.user) {
       return;
     }
 
-    const battingIds = state.teams.a;
-    const bowlingIds = state.teams.b;
+    const channel = supabase
+      .channel("cricket-mania-scoreboard")
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
+        void loadMatches();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, () => {
+        if (activeMatch?.id) {
+          void loadDeliveries(activeMatch.id);
+        }
+      })
+      .subscribe();
 
-    setState((current) => ({
-      ...current,
-      screen: "score",
-      score: {
-        battingTeam: "a",
-        runs: 0,
-        wickets: 0,
-        legalBalls: 0,
-        strikerId: battingIds[0],
-        nonStrikerId: battingIds[1],
-        bowlerId: bowlingIds[0],
-        nextBatterIndex: 2,
-        deliveries: [],
-      },
-    }));
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [session?.user, activeMatch?.id]);
+
+  useEffect(() => {
+    if (activeMatch?.id) {
+      void loadDeliveries(activeMatch.id);
+    }
+  }, [activeMatch?.id]);
+
+  async function loadAppData(userId: string) {
+    setBusy(true);
+    try {
+      const [{ data: profileData }, { data: roleData }] = await Promise.all([
+        supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+        supabase.from("user_roles").select("*").eq("user_id", userId).maybeSingle(),
+      ]);
+
+      setProfile(profileData ?? null);
+      setRole(roleData?.role ?? "player");
+
+      await loadMatches();
+      if (roleData?.role === "admin") {
+        await loadAdminLists();
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function addDelivery(runs: number, options: { extra?: ExtraType; wicket?: boolean } = {}) {
-    setState((current) => {
-      if (!current.score) {
-        return current;
-      }
+  async function loadMatches() {
+    const { data, error } = await supabase.from("matches").select("*").order("created_at", { ascending: false });
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
 
-      const legal = options.extra !== "WD" && options.extra !== "NB";
-      const isExtra = Boolean(options.extra);
-      const deliveryRuns = isExtra ? runs + 1 : runs;
-      const legalBalls = current.score.legalBalls + (legal ? 1 : 0);
-      const battingIds = current.teams[current.score.battingTeam];
-      const maxWickets = Math.max(0, battingIds.length - 1);
-      const wicketAllowed = Boolean(options.wicket && current.score.wickets < maxWickets);
-      const wickets = current.score.wickets + (wicketAllowed ? 1 : 0);
-      let strikerId = current.score.strikerId;
-      let nonStrikerId = current.score.nonStrikerId;
-      let nextBatterIndex = current.score.nextBatterIndex;
+    setMatches(data ?? []);
+    setActiveMatchId((current) => current ?? data?.[0]?.id ?? null);
+  }
 
-      if (wicketAllowed && nextBatterIndex < battingIds.length) {
-        strikerId = battingIds[nextBatterIndex];
-        nextBatterIndex += 1;
-      } else if (!wicketAllowed && legal && runs % 2 === 1) {
-        [strikerId, nonStrikerId] = [nonStrikerId, strikerId];
-      }
+  async function loadDeliveries(matchId: string) {
+    const { data, error } = await supabase
+      .from("deliveries")
+      .select("*")
+      .eq("match_id", matchId)
+      .order("created_at", { ascending: false })
+      .limit(24);
 
-      if (legal && legalBalls % 6 === 0) {
-        [strikerId, nonStrikerId] = [nonStrikerId, strikerId];
-      }
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
 
-      const label = options.wicket
-        ? "W"
-        : options.extra
-          ? `${options.extra}${runs > 0 ? `+${runs}` : ""}`
-          : String(runs);
+    setDeliveries(data ?? []);
+  }
 
-      const delivery: Delivery = {
-        id: `${Date.now()}-${current.score.deliveries.length}`,
+  async function loadAdminLists() {
+    const [{ data: profileRows, error: profileError }, { data: roleRows, error: roleError }] = await Promise.all([
+      supabase.from("profiles").select("*").order("created_at", { ascending: false }),
+      supabase.from("user_roles").select("*"),
+    ]);
+
+    if (profileError || roleError) {
+      setNotice(profileError?.message ?? roleError?.message ?? "Unable to load players.");
+      return;
+    }
+
+    setProfiles(profileRows ?? []);
+    setRoles(roleRows ?? []);
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setTab("scoreboard");
+  }
+
+  async function createMatch(formData: FormData) {
+    if (!session?.user || !isAdmin) {
+      return;
+    }
+
+    const title = String(formData.get("title") ?? "Turf Match").trim() || "Turf Match";
+    const venue = String(formData.get("venue") ?? "Local Turf").trim() || "Local Turf";
+    const teamSize = Number(formData.get("teamSize") ?? 6);
+    const striker = String(formData.get("striker") ?? "").trim();
+    const nonStriker = String(formData.get("nonStriker") ?? "").trim();
+    const bowler = String(formData.get("bowler") ?? "").trim();
+
+    setBusy(true);
+    const { data, error } = await supabase
+      .from("matches")
+      .insert({
+        title,
+        venue,
+        team_size: teamSize,
+        status: "live",
+        striker_name: striker || null,
+        non_striker_name: nonStriker || null,
+        bowler_name: bowler || null,
+        created_by: session.user.id,
+      })
+      .select()
+      .single();
+
+    setBusy(false);
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    setNotice("Match created and live.");
+    setActiveMatchId(data.id);
+    await loadMatches();
+  }
+
+  async function updateMatchStatus(status: MatchStatus) {
+    if (!activeMatch || !isAdmin) {
+      return;
+    }
+
+    const { error } = await supabase.from("matches").update({ status }).eq("id", activeMatch.id);
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    await loadMatches();
+  }
+
+  async function scoreDelivery(runs: number, options: { extra?: ExtraType; wicket?: boolean } = {}) {
+    if (!activeMatch || !session?.user || !isAdmin) {
+      return;
+    }
+
+    const legal = options.extra !== "WD" && options.extra !== "NB";
+    const runValue = options.extra ? runs + 1 : runs;
+    const nextLegalBalls = activeMatch.legal_balls + (legal ? 1 : 0);
+    const nextWickets = activeMatch.wickets + (options.wicket ? 1 : 0);
+    const label = options.wicket
+      ? "W"
+      : options.extra
+        ? `${options.extra}${runs > 0 ? `+${runs}` : ""}`
+        : String(runs);
+
+    setBusy(true);
+    const [{ error: deliveryError }, { error: matchError }] = await Promise.all([
+      supabase.from("deliveries").insert({
+        match_id: activeMatch.id,
         label,
-        runs: deliveryRuns,
+        runs: runValue,
         legal,
-        wicket: wicketAllowed,
-        extra: options.extra,
-      };
+        wicket: Boolean(options.wicket),
+        extra: options.extra ?? null,
+        ball_index: nextLegalBalls,
+        created_by: session.user.id,
+      }),
+      supabase
+        .from("matches")
+        .update({
+          runs: activeMatch.runs + runValue,
+          wickets: nextWickets,
+          legal_balls: nextLegalBalls,
+          status: "live",
+        })
+        .eq("id", activeMatch.id),
+    ]);
+    setBusy(false);
 
-      return {
-        ...current,
-        score: {
-          ...current.score,
-          runs: current.score.runs + deliveryRuns,
-          wickets,
-          legalBalls,
-          strikerId,
-          nonStrikerId,
-          nextBatterIndex,
-          deliveries: [delivery, ...current.score.deliveries].slice(0, 30),
-        },
-      };
-    });
+    if (deliveryError || matchError) {
+      setNotice(deliveryError?.message ?? matchError?.message ?? "Unable to update score.");
+      return;
+    }
+
+    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id)]);
   }
 
-  function resetMatch() {
-    setState(makeDefaultState());
+  async function resetScore() {
+    if (!activeMatch || !isAdmin) {
+      return;
+    }
+
+    setBusy(true);
+    const [{ error: deleteError }, { error: matchError }] = await Promise.all([
+      supabase.from("deliveries").delete().eq("match_id", activeMatch.id),
+      supabase
+        .from("matches")
+        .update({ runs: 0, wickets: 0, legal_balls: 0, status: "setup" })
+        .eq("id", activeMatch.id),
+    ]);
+    setBusy(false);
+
+    if (deleteError || matchError) {
+      setNotice(deleteError?.message ?? matchError?.message ?? "Unable to reset score.");
+      return;
+    }
+
+    await Promise.all([loadMatches(), loadDeliveries(activeMatch.id)]);
+  }
+
+  async function updatePlayer(profileId: string, values: Partial<Pick<Profile, "display_name" | "phone" | "skills">>) {
+    if (!isAdmin) {
+      return;
+    }
+
+    const { error } = await supabase.from("profiles").update(values).eq("id", profileId);
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    await loadAdminLists();
+  }
+
+  async function updateRole(profileId: string, nextRole: AppRole) {
+    if (!isAdmin || profileId === session?.user.id) {
+      return;
+    }
+
+    const { error } = await supabase.from("user_roles").update({ role: nextRole }).eq("user_id", profileId);
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    await loadAdminLists();
+  }
+
+  if (authLoading) {
+    return (
+      <main className="page-shell">
+        <section className="phone-shell center-shell">
+          <Activity className="spin" size={28} />
+          <p>Opening Cricket Mania...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen />;
   }
 
   return (
     <main className="page-shell">
-      <section className="phone-shell" aria-label="Cricket Mania mobile app">
-        <header className="app-header">
+      <section className="phone-shell" aria-label="Cricket Mania mobile web app">
+        <header className="app-header sticky-top">
           <div className="top-bar">
-            <button className="icon-button" aria-label="Menu">
+            <button className="icon-button" aria-label="Scoreboard" onClick={() => setTab("scoreboard")}>
               <ClipboardList size={22} />
             </button>
             <h1>
               Cricket <span>Mania</span>
             </h1>
-            <button className="icon-button" aria-label="Reset app" onClick={resetMatch}>
-              <RotateCcw size={21} />
+            <button className="icon-button" aria-label="Sign out" onClick={signOut}>
+              <LogOut size={21} />
             </button>
           </div>
           <div className="match-strip">
-            <strong>Turf Match</strong>
-            <span>{state.players.length} Players</span>
-            <span>{state.teamSize}v{state.teamSize}</span>
+            <strong>{activeMatch?.title ?? "No Match"}</strong>
+            <span>{activeMatch ? `${activeMatch.runs}/${activeMatch.wickets}` : "0/0"}</span>
+            <span>{activeMatch ? `${getOvers(activeMatch.legal_balls)} ov` : "0.0 ov"}</span>
+          </div>
+          <div className="account-strip">
+            <span>{profile?.display_name ?? session.user.email}</span>
+            <strong>{role}</strong>
           </div>
         </header>
 
-        <StepTracker screen={state.screen} draftStarted={draftStarted} teamsReady={teamsReady} />
-
         <div className="screen-body">
-          {state.screen === "setup" && (
-            <SetupScreen
-              state={state}
-              setupReady={setupReady}
-              hasEnoughPlayers={hasEnoughPlayers}
-              requiredPlayers={requiredPlayers}
-              onState={setState}
-              onApplyPlayers={updatePlayersFromText}
-              onStartDraft={startDraft}
+          {notice && (
+            <button className="notice" onClick={() => setNotice("")}>
+              {notice}
+            </button>
+          )}
+
+          {tab === "scoreboard" && (
+            <ScoreboardView
+              match={activeMatch}
+              deliveries={deliveries}
+              matches={matches}
+              onSelectMatch={setActiveMatchId}
             />
           )}
 
-          {state.screen === "draft" && (
-            <DraftScreen
-              state={state}
-              playerMap={playerMap}
-              teamsReady={teamsReady}
-              onPickPlayer={pickPlayer}
-              onRemovePick={removePick}
-              onStartScoring={startScoring}
+          {tab === "players" && (
+            <PlayerView
+              profile={profile}
+              role={role}
+              match={activeMatch}
+              deliveries={deliveries}
+              onRefresh={() => session.user && loadAppData(session.user.id)}
             />
           )}
 
-          {state.screen === "teams" && (
-            <TeamsScreen
-              state={state}
-              playerMap={playerMap}
-              onBackToDraft={() => setState((current) => ({ ...current, screen: "draft" }))}
-              onStartScoring={startScoring}
+          {tab === "admin" && isAdmin && (
+            <AdminView
+              busy={busy}
+              match={activeMatch}
+              profiles={profiles}
+              roles={roles}
+              currentUserId={session.user.id}
+              onCreateMatch={createMatch}
+              onScore={scoreDelivery}
+              onReset={resetScore}
+              onStatus={updateMatchStatus}
+              onUpdatePlayer={updatePlayer}
+              onUpdateRole={updateRole}
+              onRefreshPlayers={loadAdminLists}
             />
           )}
 
-          {state.screen === "score" && state.score && (
-            <ScoreScreen
-              state={state}
-              playerMap={playerMap}
-              onDelivery={addDelivery}
-              onBackToTeams={() => setState((current) => ({ ...current, screen: "teams" }))}
-            />
+          {tab === "admin" && !isAdmin && (
+            <section className="panel empty-state">
+              <Shield size={34} />
+              <h2>Admin access needed</h2>
+              <p>Players can see the live scoreboard. Admin accounts can manage players and update running matches.</p>
+            </section>
           )}
         </div>
 
-        <nav className="bottom-nav" aria-label="Primary">
+        <nav className="bottom-nav sticky-bottom" aria-label="Primary">
+          <NavButton
+            icon={<Trophy size={22} />}
+            label="Score"
+            active={tab === "scoreboard"}
+            onClick={() => setTab("scoreboard")}
+          />
           <NavButton
             icon={<Users size={22} />}
             label="Players"
-            active={state.screen === "setup" || state.screen === "draft"}
-            onClick={() => setState((current) => ({ ...current, screen: draftStarted ? "draft" : "setup" }))}
+            active={tab === "players"}
+            onClick={() => setTab("players")}
           />
           <NavButton
             icon={<Shield size={22} />}
-            label="Teams"
-            active={state.screen === "teams"}
-            disabled={!draftStarted}
-            onClick={() => setState((current) => ({ ...current, screen: "teams" }))}
-          />
-          <NavButton
-            icon={<Swords size={22} />}
-            label="Score"
-            active={state.screen === "score"}
-            disabled={!teamsReady}
-            onClick={() => (state.score ? setState((current) => ({ ...current, screen: "score" })) : startScoring())}
+            label="Admin"
+            active={tab === "admin"}
+            onClick={() => setTab("admin")}
           />
         </nav>
       </section>
@@ -417,472 +455,389 @@ export function App() {
   );
 }
 
-function usePersistentState() {
-  const [state, setState] = useState<AppState>(safeLoadState);
+function AuthScreen() {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+  async function submitAuth(formData: FormData) {
+    const email = String(formData.get("email") ?? "").trim();
+    const password = String(formData.get("password") ?? "");
+    const displayName = String(formData.get("displayName") ?? "").trim();
 
-  return [state, setState] as const;
-}
+    setBusy(true);
+    setMessage("");
 
-function StepTracker({
-  screen,
-  draftStarted,
-  teamsReady,
-}: {
-  screen: Screen;
-  draftStarted: boolean;
-  teamsReady: boolean;
-}) {
-  const steps = [
-    { id: "setup", label: "Setup", helper: "Players", complete: draftStarted },
-    { id: "draft", label: "Pick", helper: "Draft teams", complete: teamsReady },
-    { id: "score", label: "Score", helper: "Start match", complete: screen === "score" },
-  ] as const;
+    const result =
+      mode === "signup"
+        ? await supabase.auth.signUp({
+            email,
+            password,
+            options: { data: { display_name: displayName || email.split("@")[0] } },
+          })
+        : await supabase.auth.signInWithPassword({ email, password });
+
+    setBusy(false);
+
+    if (result.error) {
+      setMessage(result.error.message);
+      return;
+    }
+
+    setMessage(mode === "signup" ? "Account created. Check your email if confirmation is enabled." : "Logged in.");
+  }
 
   return (
-    <section className="stepper" aria-label="Match setup progress">
-      {steps.map((step, index) => {
-        const active = step.id === screen || (step.id === "draft" && screen === "teams");
-        return (
-          <div className={`step ${active ? "active" : ""} ${step.complete ? "complete" : ""}`} key={step.id}>
-            <div className="step-line" />
-            <div className="step-number">{step.complete ? <Check size={16} /> : index + 1}</div>
-            <strong>{step.label}</strong>
-            <span>{step.helper}</span>
-          </div>
-        );
-      })}
-    </section>
-  );
-}
+    <main className="page-shell">
+      <section className="phone-shell auth-shell">
+        <header className="auth-header">
+          <div className="brand-ball" aria-hidden="true" />
+          <h1>
+            Cricket <span>Mania</span>
+          </h1>
+          <p>Mobile scoreboard for turf and gully cricket players.</p>
+        </header>
 
-function SetupScreen({
-  state,
-  setupReady,
-  hasEnoughPlayers,
-  requiredPlayers,
-  onState,
-  onApplyPlayers,
-  onStartDraft,
-}: {
-  state: AppState;
-  setupReady: boolean;
-  hasEnoughPlayers: boolean;
-  requiredPlayers: number;
-  onState: Dispatch<SetStateAction<AppState>>;
-  onApplyPlayers: () => void;
-  onStartDraft: () => void;
-}) {
-  return (
-    <section className="stack">
-      <div className="hero-card">
-        <div>
-          <p className="eyebrow">Quick gully setup</p>
-          <h2>Make fair teams before the first ball.</h2>
-        </div>
-        <Trophy size={42} />
-      </div>
-
-      <label className="field-card">
-        <span>Paste or type player names</span>
-        <textarea
-          value={state.playerText}
-          rows={8}
-          onChange={(event) => onState((current) => ({ ...current, playerText: event.target.value }))}
-        />
-      </label>
-      <button className="secondary-action" onClick={onApplyPlayers}>
-        Update player list
-      </button>
-
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Match size</h3>
-          <span>{state.players.length} available</span>
-        </div>
-        <div className="segmented-grid">
-          {TEAM_SIZES.map((size) => (
-            <button
-              className={state.teamSize === size ? "selected" : ""}
-              key={size}
-              onClick={() =>
-                onState((current) => ({
-                  ...current,
-                  teamSize: size,
-                  teams: { a: [], b: [] },
-                  score: null,
-                }))
-              }
-            >
-              {size}v{size}
+        <form
+          className="auth-card"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitAuth(new FormData(event.currentTarget));
+          }}
+        >
+          <div className="auth-tabs">
+            <button type="button" className={mode === "login" ? "selected" : ""} onClick={() => setMode("login")}>
+              Login
             </button>
-          ))}
-        </div>
-        {!hasEnoughPlayers && <p className="warning">Need {requiredPlayers} players for this match size.</p>}
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Choose captains</h3>
-          <span>Locked into teams</span>
-        </div>
-        <div className="captain-selectors">
-          <label>
-            <span>Captain A</span>
-            <select
-              value={state.captainAId}
-              onChange={(event) =>
-                onState((current) => ({
-                  ...current,
-                  captainAId: event.target.value,
-                  teams: { a: [], b: [] },
-                  score: null,
-                }))
-              }
-            >
-              {state.players.map((player) => (
-                <option value={player.id} key={player.id}>
-                  {player.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Captain B</span>
-            <select
-              value={state.captainBId}
-              onChange={(event) =>
-                onState((current) => ({
-                  ...current,
-                  captainBId: event.target.value,
-                  teams: { a: [], b: [] },
-                  score: null,
-                }))
-              }
-            >
-              {state.players.map((player) => (
-                <option value={player.id} key={player.id}>
-                  {player.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {state.captainAId === state.captainBId && <p className="warning">Pick two different captains.</p>}
-      </section>
-
-      <button className="sticky-action" disabled={!setupReady} onClick={onStartDraft}>
-        Start captain draft <ChevronRight size={20} />
-      </button>
-    </section>
-  );
-}
-
-function DraftScreen({
-  state,
-  playerMap,
-  teamsReady,
-  onPickPlayer,
-  onRemovePick,
-  onStartScoring,
-}: {
-  state: AppState;
-  playerMap: Map<string, Player>;
-  teamsReady: boolean;
-  onPickPlayer: (playerId: string) => void;
-  onRemovePick: (team: TeamKey, playerId: string) => void;
-  onStartScoring: () => void;
-}) {
-  const currentCaptain = playerMap.get(state.currentPick === "a" ? state.captainAId : state.captainBId);
-  const availablePlayers = state.players.filter(
-    (player) => !state.teams.a.includes(player.id) && !state.teams.b.includes(player.id),
-  );
-
-  return (
-    <section className="stack">
-      <div className="captain-grid">
-        <CaptainPanel
-          tone="green"
-          title="Captain"
-          captain={playerMap.get(state.captainAId)}
-          count={state.teams.a.length}
-          teamSize={state.teamSize}
-        />
-        <div className="turn-card">
-          <span>picks next</span>
-          <strong>{currentCaptain?.name ?? "Captain"}</strong>
-          <div className="turn-dots" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-            <i />
+            <button type="button" className={mode === "signup" ? "selected" : ""} onClick={() => setMode("signup")}>
+              Create
+            </button>
           </div>
-        </div>
-        <CaptainPanel
-          tone="blue"
-          title="Captain"
-          captain={playerMap.get(state.captainBId)}
-          count={state.teams.b.length}
-          teamSize={state.teamSize}
-        />
-      </div>
 
-      <div className="team-chip-grid">
-        <DraftedTeam
-          name={`${playerMap.get(state.captainAId)?.name ?? "Team A"} XI`}
-          ids={state.teams.a}
-          team="a"
-          playerMap={playerMap}
-          onRemove={onRemovePick}
-        />
-        <DraftedTeam
-          name={`${playerMap.get(state.captainBId)?.name ?? "Team B"} XI`}
-          ids={state.teams.b}
-          team="b"
-          playerMap={playerMap}
-          onRemove={onRemovePick}
-        />
-      </div>
+          {mode === "signup" && (
+            <label>
+              <span>Player name</span>
+              <input name="displayName" placeholder="Arjun Patil" />
+            </label>
+          )}
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" placeholder="player@example.com" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" minLength={6} placeholder="Minimum 6 characters" required />
+          </label>
 
-      <div className="tip-row">Teams stay balanced because captains pick turn by turn.</div>
+          {message && <p className="form-message">{message}</p>}
 
-      <section className="panel player-list">
-        <div className="panel-title">
-          <h3>Available players ({availablePlayers.length})</h3>
-          <span>Tap to pick</span>
-        </div>
-        {availablePlayers.map((player) => (
-          <button className="player-row" key={player.id} onClick={() => onPickPlayer(player.id)}>
-            <Avatar name={player.name} />
-            <span className="player-main">
-              <strong>{player.name}</strong>
-              <SkillChips skills={player.skills} />
-            </span>
-            <span className="plus-button">+</span>
+          <button className="primary-action" disabled={busy}>
+            {mode === "signup" ? <UserPlus size={19} /> : <Mail size={19} />}
+            {busy ? "Please wait..." : mode === "signup" ? "Create account" : "Login"}
           </button>
-        ))}
-        {availablePlayers.length === 0 && <p className="empty-note">All players are drafted.</p>}
+        </form>
       </section>
-
-      <section className="score-ready-card">
-        <div className="bat-icon" aria-hidden="true">
-          <span />
-        </div>
-        <div>
-          <h3>{teamsReady ? "Ready to score?" : "Finish both teams"}</h3>
-          <p>
-            {teamsReady
-              ? "Lock the XIs and start the gully scorecard."
-              : `Both sides need ${state.teamSize} players before scoring starts.`}
-          </p>
-        </div>
-        <button disabled={!teamsReady} onClick={onStartScoring}>
-          Start
-        </button>
-      </section>
-    </section>
+    </main>
   );
 }
 
-function TeamsScreen({
-  state,
-  playerMap,
-  onBackToDraft,
-  onStartScoring,
+function ScoreboardView({
+  match,
+  deliveries,
+  matches,
+  onSelectMatch,
 }: {
-  state: AppState;
-  playerMap: Map<string, Player>;
-  onBackToDraft: () => void;
-  onStartScoring: () => void;
+  match: Match | null;
+  deliveries: Delivery[];
+  matches: Match[];
+  onSelectMatch: (id: string) => void;
 }) {
+  if (!match) {
+    return (
+      <section className="panel empty-state">
+        <Trophy size={34} />
+        <h2>No live match yet</h2>
+        <p>Ask the admin to create a match. Once it starts, every player account can see the scoreboard here.</p>
+      </section>
+    );
+  }
+
   return (
     <section className="stack">
-      <div className="hero-card">
-        <div>
-          <p className="eyebrow">Teams locked</p>
-          <h2>Check the XIs, then start scoring.</h2>
-        </div>
-        <Shield size={42} />
-      </div>
-      <FullTeamCard title={`${playerMap.get(state.captainAId)?.name ?? "Team A"} XI`} ids={state.teams.a} playerMap={playerMap} />
-      <FullTeamCard title={`${playerMap.get(state.captainBId)?.name ?? "Team B"} XI`} ids={state.teams.b} playerMap={playerMap} />
-      <div className="dual-actions">
-        <button className="secondary-action" onClick={onBackToDraft}>
-          Edit picks
-        </button>
-        <button className="primary-action" onClick={onStartScoring}>
-          Start scoring
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function ScoreScreen({
-  state,
-  playerMap,
-  onDelivery,
-  onBackToTeams,
-}: {
-  state: AppState;
-  playerMap: Map<string, Player>;
-  onDelivery: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
-  onBackToTeams: () => void;
-}) {
-  const score = state.score!;
-  const battingCaptain = playerMap.get(score.battingTeam === "a" ? state.captainAId : state.captainBId);
-  const striker = playerMap.get(score.strikerId);
-  const nonStriker = playerMap.get(score.nonStrikerId);
-  const bowler = playerMap.get(score.bowlerId);
-
-  return (
-    <section className="stack score-screen">
       <div className="score-hero">
-        <span>{battingCaptain?.name ?? "Team"} XI batting</span>
+        <span>
+          {match.batting_team} vs {match.bowling_team}
+        </span>
         <strong>
-          {score.runs}/{score.wickets}
+          {match.runs}/{match.wickets}
         </strong>
-        <small>{getOvers(score.legalBalls)} overs</small>
+        <small>
+          {getOvers(match.legal_balls)} overs · {match.status}
+        </small>
       </div>
 
       <div className="crease-grid">
-        <PlayerStat label="Striker" value={striker?.name ?? "-"} highlight />
-        <PlayerStat label="Non-striker" value={nonStriker?.name ?? "-"} />
-        <PlayerStat label="Bowler" value={bowler?.name ?? "-"} />
+        <PlayerStat label="Striker" value={match.striker_name ?? "Set by admin"} highlight />
+        <PlayerStat label="Non-striker" value={match.non_striker_name ?? "Set by admin"} />
+        <PlayerStat label="Bowler" value={match.bowler_name ?? "Set by admin"} />
       </div>
-
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Runs</h3>
-          <span>Legal ball</span>
-        </div>
-        <div className="run-grid">
-          {[0, 1, 2, 3, 4, 6].map((run) => (
-            <button key={run} onClick={() => onDelivery(run)}>
-              {run}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Gully extras</h3>
-          <span>Quick add</span>
-        </div>
-        <div className="extras-grid">
-          <button onClick={() => onDelivery(0, { extra: "WD" })}>Wide</button>
-          <button onClick={() => onDelivery(0, { extra: "NB" })}>No ball</button>
-          <button onClick={() => onDelivery(0, { extra: "B" })}>Bye</button>
-          <button onClick={() => onDelivery(0, { extra: "LB" })}>Leg bye</button>
-          <button className="danger" onClick={() => onDelivery(0, { wicket: true })}>
-            Wicket
-          </button>
-        </div>
-      </section>
 
       <section className="panel">
         <div className="panel-title">
           <h3>Recent balls</h3>
-          <span>{score.deliveries.length} balls</span>
+          <span>{deliveries.length} shown</span>
         </div>
-        <div className="ball-strip">
-          {score.deliveries.slice(0, 12).map((delivery) => (
-            <span className={delivery.wicket ? "wicket-ball" : ""} key={delivery.id}>
-              {delivery.label}
-            </span>
-          ))}
-          {score.deliveries.length === 0 && <p className="empty-note">Score the first ball to start the feed.</p>}
-        </div>
+        <BallStrip deliveries={deliveries} />
       </section>
 
-      <button className="secondary-action" onClick={onBackToTeams}>
-        View teams
-      </button>
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Matches</h3>
+          <span>{matches.length}</span>
+        </div>
+        <div className="match-list">
+          {matches.map((item) => (
+            <button className={item.id === match.id ? "selected" : ""} key={item.id} onClick={() => onSelectMatch(item.id)}>
+              <span>
+                <strong>{item.title}</strong>
+                <small>{formatDate(item.created_at)}</small>
+              </span>
+              <b>
+                {item.runs}/{item.wickets}
+              </b>
+            </button>
+          ))}
+        </div>
+      </section>
     </section>
   );
 }
 
-function CaptainPanel({
-  tone,
-  title,
-  captain,
-  count,
-  teamSize,
+function PlayerView({
+  profile,
+  role,
+  match,
+  deliveries,
+  onRefresh,
 }: {
-  tone: "green" | "blue";
-  title: string;
-  captain?: Player;
-  count: number;
-  teamSize: number;
+  profile: Profile | null;
+  role: AppRole;
+  match: Match | null;
+  deliveries: Delivery[];
+  onRefresh: () => void;
 }) {
   return (
-    <section className={`captain-panel ${tone}`}>
-      <Avatar name={captain?.name ?? "Captain"} />
-      <div>
-        <span>{title}</span>
-        <strong>{captain?.name ?? "-"}</strong>
-        <p>
-          {count} / {teamSize} picks
-        </p>
+    <section className="stack">
+      <div className="hero-card">
+        <div>
+          <p className="eyebrow">Player account</p>
+          <h2>{profile?.display_name ?? "Cricket player"}</h2>
+        </div>
+        <Users size={40} />
       </div>
-      <progress value={count} max={teamSize} />
+
+      <section className="panel profile-panel">
+        <div className="panel-title">
+          <h3>Your profile</h3>
+          <span>{role}</span>
+        </div>
+        <p>{profile?.email}</p>
+        <SkillChips skills={profile?.skills ?? []} />
+        <button className="secondary-action" onClick={onRefresh}>
+          Refresh scoreboard
+        </button>
+      </section>
+
+      <section className="panel stat-grid">
+        <PlayerStat label="Current score" value={match ? `${match.runs}/${match.wickets}` : "No match"} />
+        <PlayerStat label="Overs" value={match ? getOvers(match.legal_balls) : "0.0"} />
+        <PlayerStat label="Last ball" value={deliveries[0]?.label ?? "-"} />
+      </section>
     </section>
   );
 }
 
-function DraftedTeam({
-  name,
-  ids,
-  team,
-  playerMap,
-  onRemove,
+function AdminView({
+  busy,
+  match,
+  profiles,
+  roles,
+  currentUserId,
+  onCreateMatch,
+  onScore,
+  onReset,
+  onStatus,
+  onUpdatePlayer,
+  onUpdateRole,
+  onRefreshPlayers,
 }: {
-  name: string;
-  ids: string[];
-  team: TeamKey;
-  playerMap: Map<string, Player>;
-  onRemove: (team: TeamKey, playerId: string) => void;
+  busy: boolean;
+  match: Match | null;
+  profiles: Profile[];
+  roles: UserRole[];
+  currentUserId: string;
+  onCreateMatch: (formData: FormData) => void;
+  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onReset: () => void;
+  onStatus: (status: MatchStatus) => void;
+  onUpdatePlayer: (profileId: string, values: Partial<Pick<Profile, "display_name" | "phone" | "skills">>) => void;
+  onUpdateRole: (profileId: string, nextRole: AppRole) => void;
+  onRefreshPlayers: () => void;
 }) {
+  const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
+
   return (
-    <section className="drafted-team">
-      <header>
-        <strong>{name}</strong>
-        <span>{ids.length}</span>
-      </header>
-      <div>
-        {ids.map((id) => (
-          <button key={id} onClick={() => onRemove(team, id)}>
-            {playerMap.get(id)?.name}
+    <section className="stack">
+      <form
+        className="panel admin-form"
+        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          event.preventDefault();
+          onCreateMatch(new FormData(event.currentTarget));
+        }}
+      >
+        <div className="panel-title">
+          <h3>Create live match</h3>
+          <span>Admin</span>
+        </div>
+        <input name="title" placeholder="Sunday Turf Match" />
+        <input name="venue" placeholder="Local Turf" />
+        <select name="teamSize" defaultValue="6">
+          {TEAM_SIZES.map((size) => (
+            <option value={size} key={size}>
+              {size}v{size}
+            </option>
+          ))}
+        </select>
+        <div className="split-inputs">
+          <input name="striker" placeholder="Striker" />
+          <input name="nonStriker" placeholder="Non-striker" />
+        </div>
+        <input name="bowler" placeholder="Bowler" />
+        <button className="primary-action" disabled={busy}>
+          <Plus size={19} />
+          Create match
+        </button>
+      </form>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Live scoring</h3>
+          <span>{match ? `${match.runs}/${match.wickets}` : "No match"}</span>
+        </div>
+        {match ? (
+          <>
+            <div className="run-grid">
+              {[0, 1, 2, 3, 4, 6].map((run) => (
+                <button key={run} disabled={busy} onClick={() => onScore(run)}>
+                  {run}
+                </button>
+              ))}
+            </div>
+            <div className="extras-grid">
+              <button disabled={busy} onClick={() => onScore(0, { extra: "WD" })}>
+                Wide
+              </button>
+              <button disabled={busy} onClick={() => onScore(0, { extra: "NB" })}>
+                No ball
+              </button>
+              <button disabled={busy} onClick={() => onScore(0, { extra: "B" })}>
+                Bye
+              </button>
+              <button disabled={busy} onClick={() => onScore(0, { extra: "LB" })}>
+                Leg bye
+              </button>
+              <button className="danger" disabled={busy} onClick={() => onScore(0, { wicket: true })}>
+                Wicket
+              </button>
+            </div>
+            <div className="dual-actions">
+              <button className="secondary-action" disabled={busy} onClick={() => onStatus(match.status === "live" ? "completed" : "live")}>
+                {match.status === "live" ? "Complete" : "Go live"}
+              </button>
+              <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
+                <RotateCcw size={18} />
+                Reset
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="empty-note">Create a match first.</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Manage players</h3>
+          <button className="tiny-action" onClick={onRefreshPlayers}>
+            Refresh
           </button>
-        ))}
-      </div>
+        </div>
+        <div className="admin-player-list">
+          {profiles.map((player) => (
+            <PlayerAdminRow
+              key={player.id}
+              profile={player}
+              role={roleMap.get(player.id) ?? "player"}
+              isSelf={player.id === currentUserId}
+              onUpdatePlayer={onUpdatePlayer}
+              onUpdateRole={onUpdateRole}
+            />
+          ))}
+          {profiles.length === 0 && <p className="empty-note">No player accounts yet.</p>}
+        </div>
+      </section>
     </section>
   );
 }
 
-function FullTeamCard({ title, ids, playerMap }: { title: string; ids: string[]; playerMap: Map<string, Player> }) {
+function PlayerAdminRow({
+  profile,
+  role,
+  isSelf,
+  onUpdatePlayer,
+  onUpdateRole,
+}: {
+  profile: Profile;
+  role: AppRole;
+  isSelf: boolean;
+  onUpdatePlayer: (profileId: string, values: Partial<Pick<Profile, "display_name" | "phone" | "skills">>) => void;
+  onUpdateRole: (profileId: string, nextRole: AppRole) => void;
+}) {
+  const [name, setName] = useState(profile.display_name);
+  const [skills, setSkills] = useState(profile.skills.join(", "));
+
   return (
-    <section className="panel full-team">
-      <div className="panel-title">
-        <h3>{title}</h3>
-        <span>{ids.length} players</span>
+    <article className="admin-player-row">
+      <div className="avatar">{profile.display_name.slice(0, 1).toUpperCase()}</div>
+      <div>
+        <input value={name} onChange={(event) => setName(event.target.value)} />
+        <small>{profile.email}</small>
+        <input value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="Bat, Bowl, WK" />
+        <div className="dual-actions">
+          <button
+            className="secondary-action"
+            onClick={() =>
+              onUpdatePlayer(profile.id, {
+                display_name: name.trim() || profile.display_name,
+                skills: skills
+                  .split(",")
+                  .map((skill) => skill.trim())
+                  .filter(Boolean),
+              })
+            }
+          >
+            Save
+          </button>
+          <button
+            className="secondary-action"
+            disabled={isSelf}
+            onClick={() => onUpdateRole(profile.id, role === "admin" ? "player" : "admin")}
+          >
+            {role === "admin" ? "Make player" : "Make admin"}
+          </button>
+        </div>
       </div>
-      {ids.map((id, index) => {
-        const player = playerMap.get(id);
-        return (
-          <div className="team-row" key={id}>
-            <span>{index + 1}</span>
-            <Avatar name={player?.name ?? "P"} />
-            <strong>{player?.name}</strong>
-            <SkillChips skills={player?.skills ?? []} />
-          </div>
-        );
-      })}
-    </section>
+    </article>
   );
 }
 
@@ -895,15 +850,24 @@ function PlayerStat({ label, value, highlight = false }: { label: string; value:
   );
 }
 
-function Avatar({ name }: { name: string }) {
+function BallStrip({ deliveries }: { deliveries: Delivery[] }) {
   return (
-    <span className="avatar" aria-hidden="true">
-      {name.slice(0, 1).toUpperCase()}
-    </span>
+    <div className="ball-strip">
+      {deliveries.map((delivery) => (
+        <span className={delivery.wicket ? "wicket-ball" : ""} key={delivery.id}>
+          {delivery.label}
+        </span>
+      ))}
+      {deliveries.length === 0 && <p className="empty-note">No balls scored yet.</p>}
+    </div>
   );
 }
 
-function SkillChips({ skills }: { skills: Skill[] }) {
+function SkillChips({ skills }: { skills: string[] }) {
+  if (skills.length === 0) {
+    return <span className="muted-text">No skills added yet</span>;
+  }
+
   return (
     <span className="skill-row">
       {skills.map((skill) => (
@@ -919,17 +883,15 @@ function NavButton({
   icon,
   label,
   active,
-  disabled,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   active: boolean;
-  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
-    <button className={active ? "active" : ""} disabled={disabled} onClick={onClick}>
+    <button className={active ? "active" : ""} onClick={onClick}>
       {icon}
       <span>{label}</span>
     </button>

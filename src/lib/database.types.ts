@@ -1,0 +1,101 @@
+export type AppRole = "player" | "admin";
+export type MatchStatus = "setup" | "live" | "completed";
+
+export type Profile = {
+  id: string;
+  email: string;
+  display_name: string;
+  phone: string | null;
+  skills: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserRole = {
+  user_id: string;
+  role: AppRole;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Match = {
+  id: string;
+  title: string;
+  venue: string;
+  team_size: number;
+  status: MatchStatus;
+  batting_team: string;
+  bowling_team: string;
+  runs: number;
+  wickets: number;
+  legal_balls: number;
+  striker_name: string | null;
+  non_striker_name: string | null;
+  bowler_name: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Delivery = {
+  id: string;
+  match_id: string;
+  label: string;
+  runs: number;
+  legal: boolean;
+  wicket: boolean;
+  extra: "WD" | "NB" | "B" | "LB" | null;
+  ball_index: number;
+  created_by: string | null;
+  created_at: string;
+};
+
+export type MatchPlayer = {
+  id: string;
+  match_id: string;
+  profile_id: string | null;
+  display_name: string;
+  team_key: "pool" | "a" | "b";
+  is_captain: boolean;
+  batting_order: number | null;
+  skills: string[];
+  created_at: string;
+};
+
+export type Database = {
+  public: {
+    Tables: {
+      profiles: {
+        Row: Profile;
+        Insert: Pick<Profile, "id" | "email" | "display_name"> & Partial<Omit<Profile, "id" | "email" | "display_name">>;
+        Update: Partial<Profile>;
+      };
+      user_roles: {
+        Row: UserRole;
+        Insert: Pick<UserRole, "user_id"> & Partial<Omit<UserRole, "user_id">>;
+        Update: Partial<UserRole>;
+      };
+      matches: {
+        Row: Match;
+        Insert: Partial<Omit<Match, "id" | "created_at" | "updated_at">>;
+        Update: Partial<Match>;
+      };
+      deliveries: {
+        Row: Delivery;
+        Insert: Pick<Delivery, "match_id" | "label"> & Partial<Omit<Delivery, "id" | "match_id" | "label" | "created_at">>;
+        Update: Partial<Delivery>;
+      };
+      match_players: {
+        Row: MatchPlayer;
+        Insert: Pick<MatchPlayer, "match_id" | "display_name"> & Partial<Omit<MatchPlayer, "id" | "match_id" | "display_name" | "created_at">>;
+        Update: Partial<MatchPlayer>;
+      };
+    };
+    Enums: {
+      app_role: AppRole;
+      match_status: MatchStatus;
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+  };
+};
