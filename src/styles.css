@@ -270,6 +270,17 @@ textarea:focus {
   line-height: 1.08;
 }
 
+.team-count {
+  width: 78px;
+  height: 78px;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 22px;
+}
+
 .score-hero {
   min-height: 150px;
   display: grid;
@@ -696,6 +707,52 @@ textarea:focus {
   gap: 10px;
 }
 
+.team-add-form {
+  display: grid;
+  gap: 10px;
+}
+
+.team-player-list {
+  display: grid;
+  gap: 10px;
+}
+
+.team-player-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e3e9f1;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.team-player-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.team-player-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.captain-badge {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: #895500;
+  background: #fff0d7;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .admin-player-row {
   display: grid;
   grid-template-columns: 44px 1fr;
@@ -717,6 +774,20 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.role-control {
+  display: grid;
+  gap: 6px;
+}
+
+.role-control span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #3d475c;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .avatar {
   width: 44px;
   height: 44px;
@@ -733,7 +804,7 @@ textarea:focus {
   flex: 0 0 auto;
   height: calc(78px + env(safe-area-inset-bottom));
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   padding: 8px 22px max(8px, env(safe-area-inset-bottom));
   background: rgba(255, 255, 255, 0.96);
   border-top: 1px solid #dfe6ef;

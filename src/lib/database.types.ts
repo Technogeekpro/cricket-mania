@@ -1,4 +1,4 @@
-export type AppRole = "player" | "admin";
+export type AppRole = "player" | "captain" | "admin";
 export type MatchStatus = "setup" | "live" | "completed";
 
 export type Profile = {
@@ -34,6 +34,8 @@ export type Match = {
   striker_name: string | null;
   non_striker_name: string | null;
   bowler_name: string | null;
+  captain_a_id: string | null;
+  captain_b_id: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

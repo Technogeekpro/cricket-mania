@@ -7,6 +7,7 @@ import {
   Plus,
   RotateCcw,
   Shield,
+  UserCog,
   Swords,
   Trophy,
   UserPlus,
@@ -15,9 +16,9 @@ import {
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
-import type { AppRole, Delivery, Match, MatchStatus, Profile, UserRole } from "./lib/database.types";
+import type { AppRole, Delivery, Match, MatchPlayer, MatchStatus, Profile, UserRole } from "./lib/database.types";
 
-type Tab = "scoreboard" | "players" | "admin";
+type Tab = "scoreboard" | "players" | "team" | "admin";
 type ExtraType = "WD" | "NB" | "B" | "LB";
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
@@ -152,6 +153,7 @@ export function App() {
   const [role, setRole] = useState<AppRole>("player");
   const [matches, setMatches] = useState<Match[]>([]);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [matchPlayers, setMatchPlayers] = useState<MatchPlayer[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [roles, setRoles] = useState<UserRole[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
@@ -165,6 +167,10 @@ export function App() {
   );
 
   const isAdmin = role === "admin";
+  const isCaptain = role === "captain";
+  const captainTeamKey =
+    activeMatch?.captain_a_id === session?.user.id ? "a" : activeMatch?.captain_b_id === session?.user.id ? "b" : null;
+  const showTeamTab = isCaptain || Boolean(captainTeamKey);
 
   useEffect(() => {
     let mounted = true;
@@ -195,6 +201,7 @@ export function App() {
     if (!session?.user) {
       setMatches([]);
       setDeliveries([]);
+      setMatchPlayers([]);
       setProfiles([]);
       setRoles([]);
       return;
@@ -218,6 +225,11 @@ export function App() {
           void loadDeliveries(activeMatch.id);
         }
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "match_players" }, () => {
+        if (activeMatch?.id) {
+          void loadMatchPlayers(activeMatch.id);
+        }
+      })
       .subscribe();
 
     return () => {
@@ -227,9 +239,15 @@ export function App() {
 
   useEffect(() => {
     if (activeMatch?.id) {
-      void loadDeliveries(activeMatch.id);
+      void Promise.all([loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
     }
   }, [activeMatch?.id]);
+
+  useEffect(() => {
+    if ((tab === "admin" && !isAdmin) || (tab === "team" && !showTeamTab)) {
+      setTab("scoreboard");
+    }
+  }, [isAdmin, showTeamTab, tab]);
 
   async function loadAppData(userId: string) {
     setBusy(true);
@@ -244,9 +262,12 @@ export function App() {
       setProfile(nextProfile);
       setRole(roleData?.role ?? "player");
 
-      await loadMatches();
-      if (roleData?.role === "admin") {
-        await loadAdminLists();
+      const loadedMatches = await loadMatches();
+      const assignedAsCaptain = loadedMatches.some(
+        (match) => match.captain_a_id === userId || match.captain_b_id === userId,
+      );
+      if (roleData?.role === "admin" || roleData?.role === "captain" || assignedAsCaptain) {
+        await loadPlayerProfiles(roleData?.role === "admin");
       }
     } finally {
       setBusy(false);
@@ -257,11 +278,12 @@ export function App() {
     const { data, error } = await supabase.from("matches").select("*").order("created_at", { ascending: false });
     if (error) {
       setNotice(error.message);
-      return;
+      return [];
     }
 
     setMatches(data ?? []);
     setActiveMatchId((current) => current ?? data?.[0]?.id ?? null);
+    return data ?? [];
   }
 
   async function loadDeliveries(matchId: string) {
@@ -280,19 +302,50 @@ export function App() {
     setDeliveries(data ?? []);
   }
 
-  async function loadAdminLists() {
-    const [{ data: profileRows, error: profileError }, { data: roleRows, error: roleError }] = await Promise.all([
-      supabase.from("profiles").select("*").order("created_at", { ascending: false }),
-      supabase.from("user_roles").select("*"),
-    ]);
+  async function loadMatchPlayers(matchId: string) {
+    const { data, error } = await supabase
+      .from("match_players")
+      .select("*")
+      .eq("match_id", matchId)
+      .order("created_at", { ascending: true });
 
-    if (profileError || roleError) {
-      setNotice(profileError?.message ?? roleError?.message ?? "Unable to load players.");
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    setMatchPlayers(data ?? []);
+  }
+
+  async function loadPlayerProfiles(includeRoles = isAdmin) {
+    const { data: profileRows, error: profileError } = await supabase
+      .from("profiles")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (profileError) {
+      setNotice(profileError.message);
       return;
     }
 
     setProfiles(profileRows ?? []);
+
+    if (!includeRoles) {
+      return;
+    }
+
+    const { data: roleRows, error: roleError } = await supabase.from("user_roles").select("*");
+
+    if (roleError) {
+      setNotice(roleError.message);
+      return;
+    }
+
     setRoles(roleRows ?? []);
+  }
+
+  async function loadAdminLists() {
+    await loadPlayerProfiles(true);
   }
 
   async function signOut() {
@@ -308,9 +361,16 @@ export function App() {
     const title = String(formData.get("title") ?? "Turf Match").trim() || "Turf Match";
     const venue = String(formData.get("venue") ?? "Local Turf").trim() || "Local Turf";
     const teamSize = Number(formData.get("teamSize") ?? 6);
+    const captainAId = String(formData.get("captainAId") ?? "");
+    const captainBId = String(formData.get("captainBId") ?? "");
     const striker = String(formData.get("striker") ?? "").trim();
     const nonStriker = String(formData.get("nonStriker") ?? "").trim();
     const bowler = String(formData.get("bowler") ?? "").trim();
+
+    if (captainAId && captainBId && captainAId === captainBId) {
+      setNotice("Choose two different captains.");
+      return;
+    }
 
     setBusy(true);
     const { data, error } = await supabase
@@ -323,6 +383,8 @@ export function App() {
         striker_name: striker || null,
         non_striker_name: nonStriker || null,
         bowler_name: bowler || null,
+        captain_a_id: captainAId || null,
+        captain_b_id: captainBId || null,
         created_by: session.user.id,
       })
       .select()
@@ -337,7 +399,47 @@ export function App() {
 
     setNotice("Match created and live.");
     setActiveMatchId(data.id);
+
+    const captainRows = [
+      { profile: profiles.find((item) => item.id === captainAId), team_key: "a" as const },
+      { profile: profiles.find((item) => item.id === captainBId), team_key: "b" as const },
+    ].filter((item): item is { profile: Profile; team_key: "a" | "b" } => Boolean(item.profile));
+
+    if (captainRows.length > 0) {
+      const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
+      const captainIdsToPromote = captainRows
+        .map(({ profile: captain }) => captain.id)
+        .filter((captainId) => roleMap.get(captainId) !== "admin");
+
+      if (captainIdsToPromote.length > 0) {
+        const { error: roleError } = await supabase
+          .from("user_roles")
+          .update({ role: "captain" })
+          .in("user_id", captainIdsToPromote);
+
+        if (roleError) {
+          setNotice(roleError.message);
+        }
+      }
+
+      const { error: playerError } = await supabase.from("match_players").insert(
+        captainRows.map(({ profile: captain, team_key }) => ({
+          match_id: data.id,
+          profile_id: captain.id,
+          display_name: captain.display_name,
+          team_key,
+          is_captain: true,
+          skills: captain.skills,
+        })),
+      );
+
+      if (playerError) {
+        setNotice(playerError.message);
+      }
+    }
+
     await loadMatches();
+    await loadMatchPlayers(data.id);
   }
 
   async function updateMatchStatus(status: MatchStatus) {
@@ -436,6 +538,55 @@ export function App() {
     }
 
     await loadAdminLists();
+  }
+
+  async function addTeamPlayer(profileId: string) {
+    const teamKey = captainTeamKey;
+    if (!activeMatch || !teamKey) {
+      return;
+    }
+
+    const player = profiles.find((item) => item.id === profileId);
+    if (!player) {
+      setNotice("Player profile not found.");
+      return;
+    }
+
+    const teamCount = matchPlayers.filter((item) => item.team_key === teamKey).length;
+    if (teamCount >= activeMatch.team_size) {
+      setNotice("This team is full.");
+      return;
+    }
+
+    const { error } = await supabase.from("match_players").insert({
+      match_id: activeMatch.id,
+      profile_id: player.id,
+      display_name: player.display_name,
+      team_key: teamKey,
+      is_captain: false,
+      skills: player.skills,
+    });
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    await loadMatchPlayers(activeMatch.id);
+  }
+
+  async function removeTeamPlayer(rowId: string) {
+    if (!activeMatch) {
+      return;
+    }
+
+    const { error } = await supabase.from("match_players").delete().eq("id", rowId);
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    await loadMatchPlayers(activeMatch.id);
   }
 
   async function updateRole(profileId: string, nextRole: AppRole) {
@@ -562,6 +713,24 @@ export function App() {
             />
           )}
 
+          {tab === "team" && showTeamTab && (
+            <CaptainTeamView
+              busy={busy}
+              match={activeMatch}
+              profiles={profiles}
+              matchPlayers={matchPlayers}
+              teamKey={captainTeamKey}
+              onAddPlayer={addTeamPlayer}
+              onRemovePlayer={removeTeamPlayer}
+              onRefresh={() => {
+                void loadPlayerProfiles(isAdmin);
+                if (activeMatch?.id) {
+                  void loadMatchPlayers(activeMatch.id);
+                }
+              }}
+            />
+          )}
+
           {tab === "admin" && isAdmin && (
             <AdminView
               busy={busy}
@@ -578,14 +747,6 @@ export function App() {
               onRefreshPlayers={loadAdminLists}
             />
           )}
-
-          {tab === "admin" && !isAdmin && (
-            <section className="panel empty-state">
-              <Shield size={34} />
-              <h2>Admin access needed</h2>
-              <p>Players can see the live scoreboard. Admin accounts can manage players and update running matches.</p>
-            </section>
-          )}
         </div>
 
         <nav className="bottom-nav sticky-bottom" aria-label="Primary">
@@ -601,12 +762,22 @@ export function App() {
             active={tab === "players"}
             onClick={() => setTab("players")}
           />
-          <NavButton
-            icon={<Shield size={22} />}
-            label="Admin"
-            active={tab === "admin"}
-            onClick={() => setTab("admin")}
-          />
+          {showTeamTab && (
+            <NavButton
+              icon={<Swords size={22} />}
+              label="Team"
+              active={tab === "team"}
+              onClick={() => setTab("team")}
+            />
+          )}
+          {isAdmin && (
+            <NavButton
+              icon={<Shield size={22} />}
+              label="Admin"
+              active={tab === "admin"}
+              onClick={() => setTab("admin")}
+            />
+          )}
         </nav>
       </section>
     </main>
@@ -890,6 +1061,126 @@ function PlayerView({
   );
 }
 
+function CaptainTeamView({
+  busy,
+  match,
+  profiles,
+  matchPlayers,
+  teamKey,
+  onAddPlayer,
+  onRemovePlayer,
+  onRefresh,
+}: {
+  busy: boolean;
+  match: Match | null;
+  profiles: Profile[];
+  matchPlayers: MatchPlayer[];
+  teamKey: "a" | "b" | null;
+  onAddPlayer: (profileId: string) => void;
+  onRemovePlayer: (rowId: string) => void;
+  onRefresh: () => void;
+}) {
+  if (!match) {
+    return (
+      <section className="panel empty-state">
+        <Swords size={34} />
+        <h2>No match selected</h2>
+        <p>Once an admin creates a match and assigns captains, captains can build their teams here.</p>
+      </section>
+    );
+  }
+
+  if (!teamKey) {
+    return (
+      <section className="panel empty-state">
+        <Shield size={34} />
+        <h2>No captain team</h2>
+        <p>Ask the admin to assign you as Team A or Team B captain for this match.</p>
+      </section>
+    );
+  }
+
+  const selectedProfileIds = new Set(matchPlayers.map((item) => item.profile_id).filter(Boolean));
+  const teamRows = matchPlayers.filter((item) => item.team_key === teamKey);
+  const availablePlayers = profiles.filter((item) => !selectedProfileIds.has(item.id));
+  const teamLabel = teamKey === "a" ? "Team A" : "Team B";
+  const isFull = teamRows.length >= match.team_size;
+
+  return (
+    <section className="stack">
+      <div className="hero-card">
+        <div>
+          <p className="eyebrow">Captain mode</p>
+          <h2>{teamLabel}</h2>
+        </div>
+        <strong className="team-count">
+          {teamRows.length}/{match.team_size}
+        </strong>
+      </div>
+
+      <form
+        className="panel team-add-form"
+        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          event.preventDefault();
+          const profileId = String(new FormData(event.currentTarget).get("profileId") ?? "");
+          if (profileId) {
+            onAddPlayer(profileId);
+            event.currentTarget.reset();
+          }
+        }}
+      >
+        <div className="panel-title">
+          <h3>Add player</h3>
+          <button className="tiny-action" type="button" onClick={onRefresh}>
+            Refresh
+          </button>
+        </div>
+        <select name="profileId" defaultValue="" disabled={busy || isFull || availablePlayers.length === 0}>
+          <option value="">{isFull ? "Team is full" : "Choose player"}</option>
+          {availablePlayers.map((player) => (
+            <option value={player.id} key={player.id}>
+              {player.display_name}
+            </option>
+          ))}
+        </select>
+        <button className="primary-action" disabled={busy || isFull || availablePlayers.length === 0}>
+          <Plus size={19} />
+          Add to {teamLabel}
+        </button>
+      </form>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>{teamLabel} squad</h3>
+          <span>{teamRows.length} picked</span>
+        </div>
+        <div className="team-player-list">
+          {teamRows.map((row) => {
+            const rowProfile = profiles.find((item) => item.id === row.profile_id) ?? null;
+            return (
+              <article className="team-player-row" key={row.id}>
+                <ProfilePhoto profile={rowProfile} />
+                <div>
+                  <strong>{row.display_name}</strong>
+                  <SkillChips skills={row.skills} />
+                </div>
+                {row.is_captain ? (
+                  <span className="captain-badge">Captain</span>
+                ) : (
+                  <button className="tiny-action danger-soft" disabled={busy} onClick={() => onRemovePlayer(row.id)}>
+                    Remove
+                  </button>
+                )}
+              </article>
+            );
+          })}
+          {teamRows.length === 0 && <p className="empty-note">No players picked yet.</p>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function AdminView({
   busy,
   match,
@@ -941,6 +1232,24 @@ function AdminView({
             </option>
           ))}
         </select>
+        <div className="split-inputs">
+          <select name="captainAId" defaultValue="">
+            <option value="">Team A captain</option>
+            {profiles.map((player) => (
+              <option value={player.id} key={player.id}>
+                {player.display_name}
+              </option>
+            ))}
+          </select>
+          <select name="captainBId" defaultValue="">
+            <option value="">Team B captain</option>
+            {profiles.map((player) => (
+              <option value={player.id} key={player.id}>
+                {player.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="split-inputs">
           <input name="striker" placeholder="Striker" />
           <input name="nonStriker" placeholder="Non-striker" />
@@ -1046,6 +1355,22 @@ function PlayerAdminRow({
         <input value={name} onChange={(event) => setName(event.target.value)} />
         <small>{profile.email}</small>
         <input value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="Bat, Bowl, WK" />
+        <label className="role-control">
+          <span>
+            <UserCog size={14} />
+            Role
+          </span>
+          <select
+            aria-label={`${profile.display_name} role`}
+            disabled={isSelf}
+            value={role}
+            onChange={(event) => onUpdateRole(profile.id, event.target.value as AppRole)}
+          >
+            <option value="player">Player</option>
+            <option value="captain">Captain</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
         <div className="dual-actions">
           <button
             className="secondary-action"
@@ -1060,13 +1385,6 @@ function PlayerAdminRow({
             }
           >
             Save
-          </button>
-          <button
-            className="secondary-action"
-            disabled={isSelf}
-            onClick={() => onUpdateRole(profile.id, role === "admin" ? "player" : "admin")}
-          >
-            {role === "admin" ? "Make player" : "Make admin"}
           </button>
         </div>
       </div>
