@@ -131,6 +131,24 @@ textarea:focus {
   justify-content: center;
   gap: 14px;
   color: var(--ink-3);
+  padding: 22px;
+  text-align: center;
+}
+
+.banned-shell h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1.05;
+}
+
+.banned-shell p {
+  margin: 0;
+  max-width: 25ch;
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
 }
 
 .sticky-top {
@@ -1428,9 +1446,45 @@ textarea:focus {
 .admin-player-list,
 .team-brand-form,
 .team-add-form,
-.team-player-list {
+.team-player-list,
+.draft-player-list,
+.action-list {
   display: grid;
   gap: 10px;
+}
+
+.claim-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.claim-card {
+  min-height: 134px;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  background: var(--surface-soft);
+  text-align: center;
+}
+
+.claim-card.toss-winner {
+  border-color: var(--gold);
+  background: var(--gold-bg);
+}
+
+.claim-card > span:last-child,
+.draft-status {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
 }
 
 .team-logo-picker {
@@ -1543,9 +1597,43 @@ textarea:focus {
   text-transform: uppercase;
 }
 
+.draft-player-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+
+.draft-player-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.draft-player-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-player-row small {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .admin-player-row {
   display: grid;
-  grid-template-columns: 48px 1fr;
+  grid-template-columns: 48px minmax(0, 1fr) 44px;
+  align-items: center;
   gap: 12px;
   padding: 12px;
   border: 1px solid var(--hairline);
@@ -1553,10 +1641,20 @@ textarea:focus {
   background: var(--surface-soft);
 }
 
-.admin-player-row > div:last-child {
+.admin-player-row > div {
   min-width: 0;
   display: grid;
   gap: 8px;
+}
+
+.admin-player-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .admin-player-row small {
@@ -1565,20 +1663,35 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-.role-control {
+.profile-detail-panel {
   display: grid;
-  gap: 6px;
+  gap: 12px;
 }
 
-.role-control span {
-  display: inline-flex;
+.profile-detail-head {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 900;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  gap: 14px;
+}
+
+.profile-detail-head h2 {
+  min-width: 0;
+  margin: 0 0 4px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-detail-head p {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 /* ====== BOTTOM NAV (floating) ====== */

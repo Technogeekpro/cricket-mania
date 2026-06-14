@@ -11,6 +11,9 @@ export type Profile = {
   skills: string[];
   avatar_url: string | null;
   avatar_path: string | null;
+  is_banned: boolean;
+  banned_at: string | null;
+  banned_by: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -46,6 +49,8 @@ export type Match = {
   captain_b_id: string | null;
   created_by: string | null;
   total_overs: number;
+  toss_winner: TeamKey;
+  draft_turn: TeamKey;
   current_innings: number;
   first_batting_team: TeamKey;
   batting_team_key: TeamKey;
