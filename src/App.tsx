@@ -21,6 +21,20 @@ type Tab = "scoreboard" | "players" | "admin";
 type ExtraType = "WD" | "NB" | "B" | "LB";
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
+const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
+
+const getAuthRedirectUrl = () => {
+  if (typeof window === "undefined") {
+    return PRODUCTION_URL;
+  }
+
+  const origin = window.location.origin;
+  if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+    return origin;
+  }
+
+  return `${origin}/`;
+};
 
 const getOvers = (legalBalls: number) => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
 
@@ -473,7 +487,10 @@ function AuthScreen() {
         ? await supabase.auth.signUp({
             email,
             password,
-            options: { data: { display_name: displayName || email.split("@")[0] } },
+            options: {
+              emailRedirectTo: getAuthRedirectUrl(),
+              data: { display_name: displayName || email.split("@")[0] },
+            },
           })
         : await supabase.auth.signInWithPassword({ email, password });
 
