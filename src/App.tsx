@@ -128,6 +128,15 @@ const getLineupGroup = (skills: string[]): LineupGroup => {
   return "BATTERS";
 };
 
+const readRealtimeString = (row: unknown, key: string) => {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+
+  const value = (row as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
+};
+
 const playerImpact = (player: MatchPlayer) =>
   player.runs_scored +
   player.fours * 2 +
@@ -376,20 +385,33 @@ export function App() {
 
     const channel = supabase
       .channel("cricket-mania-scoreboard")
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
-        void loadMatches();
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, (payload) => {
+        const changedMatchId = readRealtimeString(payload.new, "id") ?? readRealtimeString(payload.old, "id");
+        const currentMatchId = activeMatchId ?? changedMatchId;
+        void loadMatches().then(() => {
+          if (currentMatchId && (!changedMatchId || changedMatchId === currentMatchId)) {
+            void loadDeliveries(currentMatchId);
+            void loadMatchPlayers(currentMatchId);
+          }
+        });
         if (session.user) {
           void loadMyCareer(session.user.id);
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, () => {
-        if (activeMatch?.id) {
-          void loadDeliveries(activeMatch.id);
+      .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, (payload) => {
+        const changedMatchId = readRealtimeString(payload.new, "match_id") ?? readRealtimeString(payload.old, "match_id");
+        const currentMatchId = activeMatchId ?? changedMatchId;
+        if (currentMatchId && (!changedMatchId || changedMatchId === currentMatchId)) {
+          void loadDeliveries(currentMatchId);
+          void loadMatches();
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "match_players" }, () => {
-        if (activeMatch?.id) {
-          void loadMatchPlayers(activeMatch.id);
+      .on("postgres_changes", { event: "*", schema: "public", table: "match_players" }, (payload) => {
+        const changedMatchId = readRealtimeString(payload.new, "match_id") ?? readRealtimeString(payload.old, "match_id");
+        const currentMatchId = activeMatchId ?? changedMatchId;
+        if (currentMatchId && (!changedMatchId || changedMatchId === currentMatchId)) {
+          void loadMatchPlayers(currentMatchId);
+          void loadMatches();
         }
         if (session.user) {
           void loadMyCareer(session.user.id);
@@ -403,7 +425,7 @@ export function App() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [session?.user, activeMatch?.id]);
+  }, [session?.user, activeMatchId]);
 
   useEffect(() => {
     if (activeMatch?.id) {
