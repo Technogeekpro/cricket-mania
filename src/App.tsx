@@ -778,6 +778,7 @@ export function App() {
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
     if (permission === "granted") {
+      haptic(18);
       setNotice("Live score notifications enabled.");
       if ("serviceWorker" in navigator) {
         await navigator.serviceWorker.register("/sw.js").catch(() => undefined);
@@ -1014,6 +1015,7 @@ export function App() {
       return;
     }
 
+    haptic([20, 20, 40]);
     setNotice(`Innings break — target ${activeMatch.runs + 1}. Pick the chasing openers.`);
     await loadMatches();
   }
@@ -1056,6 +1058,7 @@ export function App() {
       return;
     }
 
+    haptic([40, 30, 70]);
     setNotice(note);
     await loadMatches();
   }
@@ -1113,6 +1116,7 @@ export function App() {
       return;
     }
 
+    haptic(12);
     await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
   }
 
@@ -1133,6 +1137,7 @@ export function App() {
       return;
     }
 
+    haptic(14);
     setNotice(`${teamLabel(teamKey, activeMatch)} claimed.`);
     await Promise.all([loadMatches(), loadMatchPlayers(activeMatch.id)]);
   }
@@ -3432,7 +3437,13 @@ function NavButton({
   onClick: () => void;
 }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick}>
+    <button
+      className={active ? "active" : ""}
+      onClick={() => {
+        haptic(active ? 5 : 10);
+        onClick();
+      }}
+    >
       {icon}
       <span>{label}</span>
     </button>
