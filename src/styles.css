@@ -724,7 +724,7 @@ textarea:focus {
   background:
     linear-gradient(180deg, rgba(5, 46, 22, 0.2), rgba(5, 46, 22, 0.46)),
     radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 36%),
-    url("./assets/gully-grass-texture.svg"),
+    url("./assets/gully-grass-texture.jpg"),
     linear-gradient(135deg, var(--brand-deep) 0%, var(--brand) 100%);
   background-size: auto, auto, 360px 240px, auto;
   background-position: center, center, center, center;
