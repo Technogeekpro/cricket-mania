@@ -67,6 +67,7 @@ type CareerStats = {
 type LineupGroup = "WICKET-KEEPERS" | "BATTERS" | "ALL-ROUNDERS" | "BOWLERS";
 
 const TEAM_SIZES = [5, 6, 7, 8, 10, 11];
+const GULLY_OVERS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
 const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
 const AVATAR_BUCKET = "profile-photos";
 const TEAM_LOGOS_BUCKET = "team-logos";
@@ -114,6 +115,8 @@ const teamLabel = (key: TeamKey, match?: Match | null) =>
     : key === "a"
       ? "First team"
       : "Second team";
+const gullyTeamLabel = (key: TeamKey) => (key === "a" ? "Team A" : "Team B");
+const gullyBattingKey = (match: Match): TeamKey => (match.current_innings === 1 ? "a" : "b");
 const teamLogoUrl = (key: TeamKey, match: Match) => (key === "a" ? match.team_a_logo_url : match.team_b_logo_url);
 const matchResultNote = (match: Match) =>
   match.result_note?.replace(/^Team A/, teamLabel("a", match)).replace(/^Team B/, teamLabel("b", match)) ?? null;
@@ -396,6 +399,30 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(APP_MODE_KEY, appMode);
   }, [appMode]);
+
+  useEffect(() => {
+    if (appMode !== "gully" || !activeMatch || !isOfficial || activeMatch.status === "completed") {
+      return;
+    }
+
+    const desiredBattingKey = gullyBattingKey(activeMatch);
+    const needsNormalization =
+      activeMatch.team_a_name !== "Team A" ||
+      activeMatch.team_b_name !== "Team B" ||
+      activeMatch.team_a_logo_url !== null ||
+      activeMatch.team_b_logo_url !== null ||
+      activeMatch.team_a_logo_path !== null ||
+      activeMatch.team_b_logo_path !== null ||
+      activeMatch.first_batting_team !== "a" ||
+      activeMatch.toss_winner !== "a" ||
+      activeMatch.draft_turn !== "a" ||
+      activeMatch.batting_team_key !== desiredBattingKey;
+
+    if (needsNormalization) {
+      void normalizeGullyMatch(activeMatch, desiredBattingKey);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appMode, activeMatch?.id, activeMatch?.current_innings, activeMatch?.status, isOfficial]);
 
   useEffect(() => {
     let mounted = true;
@@ -925,11 +952,11 @@ export function App() {
     const totalOvers = Math.max(1, Math.min(50, Math.round(Number(formData.get("totalOvers") ?? 6) || 6)));
     const teamAId = String(formData.get("teamAId") ?? "");
     const teamBId = String(formData.get("teamBId") ?? "");
-    const tossWinner: TeamKey = String(formData.get("tossWinner") ?? "a") === "b" ? "b" : "a";
+    const tossWinner: TeamKey = appMode === "gully" ? "a" : String(formData.get("tossWinner") ?? "a") === "b" ? "b" : "a";
     // Captain teams are optional now — when left blank we spin up plain Team A / Team B
     // and the umpire builds the squads + picks captains afterwards.
-    const teamA = captainTeams.find((team) => team.id === teamAId && team.captain_id) ?? null;
-    const teamB = captainTeams.find((team) => team.id === teamBId && team.captain_id) ?? null;
+    const teamA = appMode === "gully" ? null : captainTeams.find((team) => team.id === teamAId && team.captain_id) ?? null;
+    const teamB = appMode === "gully" ? null : captainTeams.find((team) => team.id === teamBId && team.captain_id) ?? null;
 
     if (teamA && teamB && (teamA.id === teamB.id || teamA.captain_id === teamB.captain_id)) {
       setNotice("Choose two different teams.");
@@ -950,12 +977,12 @@ export function App() {
         total_overs: totalOvers,
         captain_a_id: teamA?.captain_id ?? null,
         captain_b_id: teamB?.captain_id ?? null,
-        team_a_name: teamA?.name ?? "Team A",
-        team_b_name: teamB?.name ?? "Team B",
-        team_a_logo_url: teamA?.logo_url ?? null,
-        team_b_logo_url: teamB?.logo_url ?? null,
-        team_a_logo_path: teamA?.logo_path ?? null,
-        team_b_logo_path: teamB?.logo_path ?? null,
+        team_a_name: appMode === "gully" ? "Team A" : teamA?.name ?? "Team A",
+        team_b_name: appMode === "gully" ? "Team B" : teamB?.name ?? "Team B",
+        team_a_logo_url: appMode === "gully" ? null : teamA?.logo_url ?? null,
+        team_b_logo_url: appMode === "gully" ? null : teamB?.logo_url ?? null,
+        team_a_logo_path: appMode === "gully" ? null : teamA?.logo_path ?? null,
+        team_b_logo_path: appMode === "gully" ? null : teamB?.logo_path ?? null,
         toss_winner: tossWinner,
         draft_turn: tossWinner,
         first_batting_team: tossWinner,
@@ -1030,6 +1057,57 @@ export function App() {
     const { error } = await supabase.from("matches").update(update).eq("id", activeMatch.id);
     if (error) {
       setNotice(error.message);
+      return;
+    }
+
+    await loadMatches();
+  }
+
+  async function updateMatchOvers(totalOvers: number) {
+    if (!activeMatch || !isOfficial) {
+      return;
+    }
+
+    const minimumOvers = Math.max(1, Math.ceil(activeMatch.legal_balls / 6));
+    const nextOvers = Math.max(minimumOvers, Math.min(50, Math.round(totalOvers) || activeMatch.total_overs));
+
+    if (nextOvers === activeMatch.total_overs) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.from("matches").update({ total_overs: nextOvers }).eq("id", activeMatch.id);
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to update overs."));
+      return;
+    }
+
+    haptic(10);
+    setNotice(`Overs set to ${nextOvers}.`);
+    await loadMatches();
+  }
+
+  async function normalizeGullyMatch(match: Match, battingTeamKey: TeamKey) {
+    const { error } = await supabase
+      .from("matches")
+      .update({
+        team_a_name: "Team A",
+        team_b_name: "Team B",
+        team_a_logo_url: null,
+        team_b_logo_url: null,
+        team_a_logo_path: null,
+        team_b_logo_path: null,
+        toss_winner: "a",
+        draft_turn: "a",
+        first_batting_team: "a",
+        batting_team_key: battingTeamKey,
+      })
+      .eq("id", match.id);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to prepare Gully mode."));
       return;
     }
 
@@ -1777,6 +1855,7 @@ export function App() {
               onUndo={undoLastDelivery}
               onReset={resetScore}
               onSetCrease={setCrease}
+              onChangeOvers={updateMatchOvers}
               onEndInnings={endInnings}
               onShare={(message) => setNotice(message)}
               onGoToManage={() => setTab("manage")}
@@ -1787,6 +1866,7 @@ export function App() {
             <ManageView
               busy={busy}
               isAdmin={isAdmin}
+              mode={appMode}
               match={activeMatch}
               matchCount={matches.length}
               profiles={profiles}
@@ -2276,8 +2356,10 @@ function GullyScoreboardView({
     );
   }
 
+  const battingKey = gullyBattingKey(match);
+
   const handleShare = () => {
-    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key, match)} ${match.runs} runs, Innings ${
+    const text = `🏏 ${match.title} — ${gullyTeamLabel(battingKey)} ${match.runs} runs, Innings ${
       match.current_innings
     }, ${getOvers(match.legal_balls)}/${match.total_overs} ov · Cricket Mania`;
     void shareContent({ title: match.title, text }, onShare);
@@ -2285,7 +2367,7 @@ function GullyScoreboardView({
 
   return (
     <section className="stack gully-mode-view">
-      <TeamVsStrip match={match} />
+      <GullyTeamVsStrip />
       <GullyScorePanel match={match} deliveries={deliveries} />
 
       <section className="panel">
@@ -2331,6 +2413,7 @@ function GullyScorePanel({
   deliveries: Delivery[];
   action?: ReactNode;
 }) {
+  const battingKey = gullyBattingKey(match);
   const isChase = match.current_innings === 2 && match.target !== null;
   const totalBalls = match.total_overs * 6;
   const ballsLeft = Math.max(0, totalBalls - match.legal_balls);
@@ -2343,7 +2426,7 @@ function GullyScorePanel({
       <div className="gully-score-top">
         <div>
           <span>{match.status === "completed" ? "Result" : `Innings ${match.current_innings}`}</span>
-          <strong>{teamLabel(match.batting_team_key, match)}</strong>
+          <strong>{gullyTeamLabel(battingKey)}</strong>
         </div>
         {action}
       </div>
@@ -2374,6 +2457,22 @@ function GullyScorePanel({
             </b>
           ))}
         </div>
+      </div>
+    </section>
+  );
+}
+
+function GullyTeamVsStrip() {
+  return (
+    <section className="team-vs-strip" aria-label="Gully teams">
+      <div className="team-badge">
+        <span className="team-logo">A</span>
+        <strong>Team A</strong>
+      </div>
+      <span className="vs-chip">VS</span>
+      <div className="team-badge">
+        <span className="team-logo">B</span>
+        <strong>Team B</strong>
       </div>
     </section>
   );
@@ -3153,6 +3252,7 @@ function UmpireView({
   onUndo,
   onReset,
   onSetCrease,
+  onChangeOvers,
   onEndInnings,
   onShare,
   onGoToManage,
@@ -3166,6 +3266,7 @@ function UmpireView({
   onUndo: () => void;
   onReset: () => void;
   onSetCrease: (values: CreaseValues) => void;
+  onChangeOvers: (totalOvers: number) => void;
   onEndInnings: () => void;
   onShare: (message: string) => void;
   onGoToManage: () => void;
@@ -3202,6 +3303,7 @@ function UmpireView({
         onScore={onScore}
         onUndo={onUndo}
         onReset={onReset}
+        onChangeOvers={onChangeOvers}
         onEndInnings={onEndInnings}
         onShare={onShare}
       />
@@ -3309,6 +3411,7 @@ function GullyUmpireView({
   onScore,
   onUndo,
   onReset,
+  onChangeOvers,
   onEndInnings,
   onShare,
 }: {
@@ -3318,6 +3421,7 @@ function GullyUmpireView({
   onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
   onUndo: () => void;
   onReset: () => void;
+  onChangeOvers: (totalOvers: number) => void;
   onEndInnings: () => void;
   onShare: (message: string) => void;
 }) {
@@ -3327,9 +3431,10 @@ function GullyUmpireView({
   const isChase = match.current_innings === 2 && match.target !== null;
   const chaseWon = isChase && match.target !== null && match.runs >= match.target;
   const canScore = !busy && !isCompleted && !oversDone && !chaseWon;
+  const battingKey = gullyBattingKey(match);
 
   const handleShare = () => {
-    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key, match)} ${match.runs} runs, Innings ${
+    const text = `🏏 ${match.title} — ${gullyTeamLabel(battingKey)} ${match.runs} runs, Innings ${
       match.current_innings
     }, ${getOvers(match.legal_balls)}/${match.total_overs} ov · Cricket Mania`;
     void shareContent({ title: match.title, text }, onShare);
@@ -3351,6 +3456,25 @@ function GullyUmpireView({
           )
         }
       />
+
+      <div className="gully-controls">
+        <label>
+          <span>Overs</span>
+          <select
+            value={match.total_overs}
+            disabled={busy || isCompleted}
+            onChange={(event) => onChangeOvers(Number(event.target.value))}
+          >
+            {Array.from(new Set([...GULLY_OVERS, match.total_overs]))
+              .sort((a, b) => a - b)
+              .map((overs) => (
+                <option value={overs} key={overs} disabled={overs * 6 < match.legal_balls}>
+                  {overs} over{overs === 1 ? "" : "s"}
+                </option>
+              ))}
+          </select>
+        </label>
+      </div>
 
       <GullyScoringPad busy={busy} canScore={canScore} canUndo={deliveries.length > 0} onScore={onScore} onUndo={onUndo} />
 
@@ -3548,6 +3672,7 @@ function SquadManager({
 function ManageView({
   busy,
   isAdmin,
+  mode,
   match,
   matchCount,
   profiles,
@@ -3568,6 +3693,7 @@ function ManageView({
 }: {
   busy: boolean;
   isAdmin: boolean;
+  mode: AppMode;
   match: Match | null;
   matchCount: number;
   profiles: Profile[];
@@ -3596,6 +3722,7 @@ function ManageView({
   const [coinTossOpen, setCoinTossOpen] = useState(false);
   const matchInProgress = match !== null && match.status !== "completed";
   const showCreateForm = !matchInProgress || showNewMatch;
+  const isGullyMode = mode === "gully";
   const selectedProfile = profiles.find((item) => item.id === selectedProfileId) ?? null;
   // Captain teams are optional; blank selection means a plain Team A / Team B.
   const teamA = activeCaptainTeams.find((team) => team.id === selectedTeamAId) ?? null;
@@ -3651,38 +3778,40 @@ function ManageView({
             <span>Match name</span>
             <input name="title" defaultValue={`Match #${matchCount + 1}`} placeholder={`Match #${matchCount + 1}`} />
           </label>
-          <div className="split-inputs">
-            <label className="field">
-              <span>First team</span>
-              <select
-                name="teamAId"
-                value={teamA?.id ?? ""}
-                onChange={(event) => setSelectedTeamAId(event.target.value)}
-              >
-                <option value="">Team A</option>
-                {activeCaptainTeams.map((team) => (
-                  <option value={team.id} key={team.id} disabled={team.id === teamB?.id}>
-                    {team.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>Second team</span>
-              <select
-                name="teamBId"
-                value={teamB?.id ?? ""}
-                onChange={(event) => setSelectedTeamBId(event.target.value)}
-              >
-                <option value="">Team B</option>
-                {activeCaptainTeams.map((team) => (
-                  <option value={team.id} key={team.id} disabled={team.id === teamA?.id}>
-                    {team.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+          {!isGullyMode && (
+            <div className="split-inputs">
+              <label className="field">
+                <span>First team</span>
+                <select
+                  name="teamAId"
+                  value={teamA?.id ?? ""}
+                  onChange={(event) => setSelectedTeamAId(event.target.value)}
+                >
+                  <option value="">Team A</option>
+                  {activeCaptainTeams.map((team) => (
+                    <option value={team.id} key={team.id} disabled={team.id === teamB?.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Second team</span>
+                <select
+                  name="teamBId"
+                  value={teamB?.id ?? ""}
+                  onChange={(event) => setSelectedTeamBId(event.target.value)}
+                >
+                  <option value="">Team B</option>
+                  {activeCaptainTeams.map((team) => (
+                    <option value={team.id} key={team.id} disabled={team.id === teamA?.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
           <div className="split-inputs">
             <label className="field">
               <span>Team size</span>
@@ -3699,28 +3828,34 @@ function ManageView({
               <input name="totalOvers" type="number" min={1} max={50} defaultValue={6} />
             </label>
           </div>
-          <label className="field">
-            <span>Toss winner / first pick</span>
-            <select
-              name="tossWinner"
-              value={tossWinner}
-              onChange={(event) => setTossWinner(event.target.value === "b" ? "b" : "a")}
-            >
-              <option value="a">{teamAName}</option>
-              <option value="b">{teamBName}</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className="coin-toss-launch"
-            onClick={() => {
-              haptic(14);
-              setCoinTossOpen(true);
-            }}
-          >
-            <Coins size={18} />
-            Flip a coin to decide
-          </button>
+          {isGullyMode ? (
+            <input type="hidden" name="tossWinner" value="a" />
+          ) : (
+            <>
+              <label className="field">
+                <span>Toss winner / first pick</span>
+                <select
+                  name="tossWinner"
+                  value={tossWinner}
+                  onChange={(event) => setTossWinner(event.target.value === "b" ? "b" : "a")}
+                >
+                  <option value="a">{teamAName}</option>
+                  <option value="b">{teamBName}</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="coin-toss-launch"
+                onClick={() => {
+                  haptic(14);
+                  setCoinTossOpen(true);
+                }}
+              >
+                <Coins size={18} />
+                Flip a coin to decide
+              </button>
+            </>
+          )}
           <div className="dual-actions">
             <button type="submit" className="primary-action" disabled={busy}>
               <Plus size={19} />

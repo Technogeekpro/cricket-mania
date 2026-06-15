@@ -722,8 +722,12 @@ textarea:focus {
   border-radius: var(--r-md);
   color: var(--ink-invert);
   background:
-    linear-gradient(180deg, rgba(20, 83, 45, 0.08), rgba(20, 83, 45, 0)),
+    linear-gradient(180deg, rgba(5, 46, 22, 0.2), rgba(5, 46, 22, 0.46)),
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 36%),
+    url("./assets/gully-grass-texture.svg"),
     linear-gradient(135deg, var(--brand-deep) 0%, var(--brand) 100%);
+  background-size: auto, auto, 360px 240px, auto;
+  background-position: center, center, center, center;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
@@ -864,6 +868,39 @@ textarea:focus {
 .gully-recent b.wicket {
   color: var(--ink-invert);
   background: var(--danger);
+}
+
+.gully-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.gully-controls label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.gully-controls span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gully-controls select {
+  width: auto;
+  min-width: 112px;
+  min-height: 34px;
+  padding: 0 28px 0 10px;
+  border-radius: var(--r-xs);
+  font-weight: 800;
 }
 
 .gully-pad {
