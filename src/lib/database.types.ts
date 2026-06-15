@@ -117,6 +117,19 @@ export type MatchPlayer = {
   created_at: string;
 };
 
+export type PushSubscriptionRecord = {
+  id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  expiration_time: string | null;
+  user_agent: string | null;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -149,6 +162,12 @@ export type Database = {
         Row: MatchPlayer;
         Insert: Pick<MatchPlayer, "match_id" | "display_name"> & Partial<Omit<MatchPlayer, "id" | "match_id" | "display_name" | "created_at">>;
         Update: Partial<MatchPlayer>;
+      };
+      push_subscriptions: {
+        Row: PushSubscriptionRecord;
+        Insert: Pick<PushSubscriptionRecord, "user_id" | "endpoint" | "p256dh" | "auth"> &
+          Partial<Omit<PushSubscriptionRecord, "id" | "user_id" | "endpoint" | "p256dh" | "auth" | "created_at" | "updated_at" | "last_seen_at">>;
+        Update: Partial<PushSubscriptionRecord>;
       };
     };
     Enums: {

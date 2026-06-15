@@ -65,6 +65,7 @@ const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
 const AVATAR_BUCKET = "profile-photos";
 const TEAM_LOGOS_BUCKET = "team-logos";
 const PENDING_AVATAR_KEY = "cricket-mania-pending-avatar-v1";
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined;
 
 const getAuthRedirectUrl = () => {
   if (typeof window === "undefined") {
@@ -140,10 +141,20 @@ const readRealtimeString = (row: unknown, key: string) => {
 
 const canUseNotifications = () => typeof window !== "undefined" && "Notification" in window;
 
+const canUsePushNotifications = () =>
+  typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && Boolean(VAPID_PUBLIC_KEY);
+
 const haptic = (pattern: number | number[] = 18) => {
   if (typeof navigator !== "undefined" && "vibrate" in navigator) {
     navigator.vibrate(pattern);
   }
+};
+
+const urlBase64ToUint8Array = (base64String: string) => {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = `${base64String}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
 };
 
 const liveScoreText = (match: Match) =>
@@ -450,6 +461,14 @@ export function App() {
     }
 
     void loadAppData(session.user.id);
+  }, [session?.user]);
+
+  useEffect(() => {
+    if (!session?.user || !canUseNotifications() || Notification.permission !== "granted") {
+      return;
+    }
+
+    void registerPushSubscription();
   }, [session?.user]);
 
   useEffect(() => {
@@ -778,11 +797,12 @@ export function App() {
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
     if (permission === "granted") {
-      haptic(18);
-      setNotice("Live score notifications enabled.");
       if ("serviceWorker" in navigator) {
         await navigator.serviceWorker.register("/sw.js").catch(() => undefined);
       }
+      const pushError = await registerPushSubscription();
+      haptic(18);
+      setNotice(pushError ? `Browser alerts enabled. Push setup failed: ${pushError}` : "Push notifications enabled.");
       if (activeMatch) {
         await showLiveNotification(activeMatch, true);
       }
@@ -816,6 +836,57 @@ export function App() {
     }
 
     new Notification(title, options);
+  }
+
+  async function registerPushSubscription() {
+    if (!session?.user) {
+      return "Login required.";
+    }
+
+    if (!canUsePushNotifications() || !VAPID_PUBLIC_KEY) {
+      return "Push key is not configured.";
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription =
+        existing ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        }));
+      const json = subscription.toJSON();
+      const p256dh = json.keys?.p256dh;
+      const auth = json.keys?.auth;
+
+      if (!p256dh || !auth) {
+        return "Push subscription keys missing.";
+      }
+
+      const { error } = await supabase.rpc("save_push_subscription", {
+        p_endpoint: subscription.endpoint,
+        p_p256dh: p256dh,
+        p_auth: auth,
+        p_expiration_time: subscription.expirationTime ? new Date(subscription.expirationTime).toISOString() : null,
+        p_user_agent: navigator.userAgent,
+      });
+
+      return error ? formatErrorMessage(error, "Could not save push subscription.") : "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "Could not register this device.";
+    }
+  }
+
+  async function notifyMatchCreated(matchId: string) {
+    try {
+      const { error } = await supabase.functions.invoke("notify-match-created", {
+        body: { matchId },
+      });
+      return error ? error.message : "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "Could not send push notifications.";
+    }
   }
 
   async function signOut() {
@@ -882,7 +953,6 @@ export function App() {
       return;
     }
 
-    setNotice(`Match created. ${teamLabel(tossWinner, data as Match)} won the toss and picks first.`);
     setActiveMatchId(data.id);
 
     const captainRows = [
@@ -905,6 +975,12 @@ export function App() {
 
     await loadMatches();
     await loadMatchPlayers(data.id);
+    const pushError = await notifyMatchCreated(data.id);
+    setNotice(
+      pushError
+        ? `Match created. ${teamLabel(tossWinner, data as Match)} picks first. Push failed: ${pushError}`
+        : `Match created. ${teamLabel(tossWinner, data as Match)} picks first. Players notified.`,
+    );
   }
 
   async function setCrease(values: { striker_id?: string | null; non_striker_id?: string | null; bowler_id?: string | null }) {
@@ -1418,7 +1494,7 @@ export function App() {
           <div className="account-strip">
             <span>{profile?.display_name ?? session.user.email}</span>
             <div className="account-actions">
-              {canUseNotifications() && notificationPermission !== "granted" && activeMatch && (
+              {canUseNotifications() && notificationPermission !== "granted" && (
                 <button className="live-alert-button" onClick={enableLiveNotifications}>
                   Live alerts
                 </button>
