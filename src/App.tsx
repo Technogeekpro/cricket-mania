@@ -36,6 +36,7 @@ import type { AppRole, CaptainTeam, Delivery, Match, MatchPlayer, Profile, TeamK
 
 type Tab = "scoreboard" | "players" | "team" | "umpire" | "manage";
 type ExtraType = "WD" | "NB" | "B" | "LB";
+type AppMode = "professional" | "gully";
 
 type CareerMatch = {
   matchId: string;
@@ -70,6 +71,7 @@ const PRODUCTION_URL = "https://cricket-mania-tau.vercel.app/";
 const AVATAR_BUCKET = "profile-photos";
 const TEAM_LOGOS_BUCKET = "team-logos";
 const PENDING_AVATAR_KEY = "cricket-mania-pending-avatar-v1";
+const APP_MODE_KEY = "cricket-mania-app-mode-v1";
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined;
 
 const getAuthRedirectUrl = () => {
@@ -86,6 +88,14 @@ const getAuthRedirectUrl = () => {
 };
 
 const getOvers = (legalBalls: number) => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+
+const readAppMode = (): AppMode => {
+  if (typeof window === "undefined") {
+    return "professional";
+  }
+
+  return window.localStorage.getItem(APP_MODE_KEY) === "gully" ? "gully" : "professional";
+};
 
 const formatRate = (value: number) => (Number.isFinite(value) && value > 0 ? value.toFixed(2) : "0.00");
 
@@ -358,6 +368,7 @@ export function App() {
   const [captainTeams, setCaptainTeams] = useState<CaptainTeam[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("scoreboard");
+  const [appMode, setAppMode] = useState<AppMode>(readAppMode);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [career, setCareer] = useState<CareerStats | null>(null);
@@ -381,6 +392,10 @@ export function App() {
     activeMatch?.captain_a_id === session?.user.id ? "a" : activeMatch?.captain_b_id === session?.user.id ? "b" : null;
   const ownedCaptainTeam = captainTeams.find((team) => team.captain_id === session?.user.id) ?? null;
   const showTeamTab = !isOfficial && (isCaptain || Boolean(captainTeamKey));
+
+  useEffect(() => {
+    window.localStorage.setItem(APP_MODE_KEY, appMode);
+  }, [appMode]);
 
   useEffect(() => {
     let mounted = true;
@@ -1028,7 +1043,8 @@ export function App() {
 
     haptic(options.wicket ? [25, 20, 45] : 10);
     setBusy(true);
-    const { error } = await supabase.rpc("score_match_delivery", {
+    const rpcName = appMode === "gully" ? "gully_score_match_delivery" : "score_match_delivery";
+    const { error } = await supabase.rpc(rpcName, {
       p_match_id: activeMatch.id,
       p_runs: runs,
       p_extra: options.extra ?? null,
@@ -1674,6 +1690,7 @@ export function App() {
           <div className="account-strip">
             <span>{profile?.display_name ?? session.user.email}</span>
             <div className="account-actions">
+              <ModeSwitch mode={appMode} onChange={setAppMode} />
               {canUseNotifications() && notificationPermission !== "granted" && (
                 <button className="live-alert-button" onClick={enableLiveNotifications}>
                   Live alerts
@@ -1691,12 +1708,22 @@ export function App() {
             </button>
           )}
 
-          {tab === "scoreboard" && !isOfficial && (
+          {tab === "scoreboard" && !isOfficial && appMode === "professional" && (
             <ScoreboardView
               match={activeMatch}
               deliveries={deliveries}
               matches={matches}
               matchPlayers={matchPlayers}
+              onSelectMatch={setActiveMatchId}
+              onShare={(message) => setNotice(message)}
+            />
+          )}
+
+          {tab === "scoreboard" && !isOfficial && appMode === "gully" && (
+            <GullyScoreboardView
+              match={activeMatch}
+              deliveries={deliveries}
+              matches={matches}
               onSelectMatch={setActiveMatchId}
               onShare={(message) => setNotice(message)}
             />
@@ -1745,6 +1772,7 @@ export function App() {
               match={activeMatch}
               deliveries={deliveries}
               matchPlayers={matchPlayers}
+              mode={appMode}
               onScore={scoreDelivery}
               onUndo={undoLastDelivery}
               onReset={resetScore}
@@ -1865,6 +1893,35 @@ function WinCelebration({ match, durationMs, onDone }: { match: Match; durationM
           Close
         </button>
       </div>
+    </div>
+  );
+}
+
+function ModeSwitch({ mode, onChange }: { mode: AppMode; onChange: (mode: AppMode) => void }) {
+  return (
+    <div className="mode-switch" aria-label="Scoring mode">
+      <button
+        type="button"
+        className={mode === "professional" ? "active" : ""}
+        aria-pressed={mode === "professional"}
+        onClick={() => {
+          haptic(8);
+          onChange("professional");
+        }}
+      >
+        Pro
+      </button>
+      <button
+        type="button"
+        className={mode === "gully" ? "active" : ""}
+        aria-pressed={mode === "gully"}
+        onClick={() => {
+          haptic(12);
+          onChange("gully");
+        }}
+      >
+        Gully
+      </button>
     </div>
   );
 }
@@ -2192,6 +2249,132 @@ function ScoreboardView({
           ))}
         </div>
       </section>
+    </section>
+  );
+}
+
+function GullyScoreboardView({
+  match,
+  deliveries,
+  matches,
+  onSelectMatch,
+  onShare,
+}: {
+  match: Match | null;
+  deliveries: Delivery[];
+  matches: Match[];
+  onSelectMatch: (id: string) => void;
+  onShare: (message: string) => void;
+}) {
+  if (!match) {
+    return (
+      <section className="panel empty-state">
+        <Trophy size={34} />
+        <h2>No gully match yet</h2>
+        <p>Switch on Gully mode when the umpire starts a quick match score.</p>
+      </section>
+    );
+  }
+
+  const handleShare = () => {
+    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key, match)} ${match.runs} runs, Innings ${
+      match.current_innings
+    }, ${getOvers(match.legal_balls)}/${match.total_overs} ov · Cricket Mania`;
+    void shareContent({ title: match.title, text }, onShare);
+  };
+
+  return (
+    <section className="stack gully-mode-view">
+      <TeamVsStrip match={match} />
+      <GullyScorePanel match={match} deliveries={deliveries} />
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Ball timeline</h3>
+          <span>{deliveries.length} balls</span>
+        </div>
+        <BallStrip deliveries={deliveries} matchPlayers={[]} />
+      </section>
+
+      <button className="secondary-action share-action" onClick={handleShare}>
+        <Share2 size={18} />
+        Share gully score
+      </button>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h3>Matches</h3>
+          <span>{matches.length}</span>
+        </div>
+        <div className="match-list">
+          {matches.map((item) => (
+            <button className={item.id === match.id ? "selected" : ""} key={item.id} onClick={() => onSelectMatch(item.id)}>
+              <span>
+                <strong>{item.title}</strong>
+                <small>{matchResultNote(item) ?? formatDate(item.created_at)}</small>
+              </span>
+              <b>{item.runs}</b>
+            </button>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function GullyScorePanel({
+  match,
+  deliveries,
+  action,
+}: {
+  match: Match;
+  deliveries: Delivery[];
+  action?: ReactNode;
+}) {
+  const isChase = match.current_innings === 2 && match.target !== null;
+  const totalBalls = match.total_overs * 6;
+  const ballsLeft = Math.max(0, totalBalls - match.legal_balls);
+  const runsNeeded = match.target ? Math.max(0, match.target - match.runs) : 0;
+  const currentOverDeliveries = getCurrentOverDeliveries(deliveries, match);
+  const displayResult = matchResultNote(match);
+
+  return (
+    <section className="gully-score-card">
+      <div className="gully-score-top">
+        <div>
+          <span>{match.status === "completed" ? "Result" : `Innings ${match.current_innings}`}</span>
+          <strong>{teamLabel(match.batting_team_key, match)}</strong>
+        </div>
+        {action}
+      </div>
+
+      <div className="gully-score-main">
+        <span>Total runs</span>
+        <strong key={`${match.runs}-${match.legal_balls}`}>{match.runs}</strong>
+        <small>
+          {getOvers(match.legal_balls)}/{match.total_overs} overs
+        </small>
+      </div>
+
+      <div className="gully-score-meta">
+        <span>{match.wickets} wickets</span>
+        <span>{ballsLeft} balls left</span>
+        {isChase && match.status !== "completed" && <span>Need {runsNeeded}</span>}
+      </div>
+
+      {displayResult && <div className="gully-result">{displayResult}</div>}
+
+      <div className="gully-recent">
+        <span>Recent</span>
+        <div>
+          {currentOverDeliveries.length === 0 && <i>—</i>}
+          {currentOverDeliveries.map((delivery) => (
+            <b className={delivery.wicket ? "wicket" : delivery.extra ? "extra" : ""} key={delivery.id}>
+              {delivery.label}
+            </b>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }
@@ -2965,6 +3148,7 @@ function UmpireView({
   match,
   deliveries,
   matchPlayers,
+  mode,
   onScore,
   onUndo,
   onReset,
@@ -2977,6 +3161,7 @@ function UmpireView({
   match: Match | null;
   deliveries: Delivery[];
   matchPlayers: MatchPlayer[];
+  mode: AppMode;
   onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
   onUndo: () => void;
   onReset: () => void;
@@ -3007,6 +3192,21 @@ function UmpireView({
   const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
   const isCompleted = match.status === "completed";
   const displayResult = matchResultNote(match);
+
+  if (mode === "gully") {
+    return (
+      <GullyUmpireView
+        busy={busy}
+        match={match}
+        deliveries={deliveries}
+        onScore={onScore}
+        onUndo={onUndo}
+        onReset={onReset}
+        onEndInnings={onEndInnings}
+        onShare={onShare}
+      />
+    );
+  }
 
   const handleShare = () => {
     const overs = `${getOvers(match.legal_balls)}/${match.total_overs} ov`;
@@ -3098,6 +3298,141 @@ function UmpireView({
         <Share2 size={18} />
         Share live score
       </button>
+    </section>
+  );
+}
+
+function GullyUmpireView({
+  busy,
+  match,
+  deliveries,
+  onScore,
+  onUndo,
+  onReset,
+  onEndInnings,
+  onShare,
+}: {
+  busy: boolean;
+  match: Match;
+  deliveries: Delivery[];
+  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onUndo: () => void;
+  onReset: () => void;
+  onEndInnings: () => void;
+  onShare: (message: string) => void;
+}) {
+  const isCompleted = match.status === "completed";
+  const totalBalls = match.total_overs * 6;
+  const oversDone = match.legal_balls >= totalBalls;
+  const isChase = match.current_innings === 2 && match.target !== null;
+  const chaseWon = isChase && match.target !== null && match.runs >= match.target;
+  const canScore = !busy && !isCompleted && !oversDone && !chaseWon;
+
+  const handleShare = () => {
+    const text = `🏏 ${match.title} — ${teamLabel(match.batting_team_key, match)} ${match.runs} runs, Innings ${
+      match.current_innings
+    }, ${getOvers(match.legal_balls)}/${match.total_overs} ov · Cricket Mania`;
+    void shareContent({ title: match.title, text }, onShare);
+  };
+
+  const endLabel = match.current_innings === 1 ? "End innings" : "End match";
+
+  return (
+    <section className="gully-umpire-view">
+      <GullyScorePanel
+        match={match}
+        deliveries={deliveries}
+        action={
+          !isCompleted && (
+            <button className="gully-end-btn" disabled={busy} onClick={onEndInnings}>
+              <Flag size={14} />
+              {endLabel}
+            </button>
+          )
+        }
+      />
+
+      <GullyScoringPad busy={busy} canScore={canScore} canUndo={deliveries.length > 0} onScore={onScore} onUndo={onUndo} />
+
+      {(oversDone || chaseWon) && !isCompleted && (
+        <p className="empty-note">
+          {oversDone ? "Overs complete." : "Target reached."} Tap {endLabel.toLowerCase()}.
+        </p>
+      )}
+
+      <div className="dual-actions">
+        <button className="secondary-action" disabled={busy} onClick={handleShare}>
+          <Share2 size={18} />
+          Share
+        </button>
+        <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
+          <RotateCcw size={18} />
+          Reset
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function GullyScoringPad({
+  busy,
+  canScore,
+  canUndo,
+  onScore,
+  onUndo,
+}: {
+  busy: boolean;
+  canScore: boolean;
+  canUndo: boolean;
+  onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
+  onUndo: () => void;
+}) {
+  const buttons: Array<{
+    label: ReactNode;
+    className?: string;
+    disabled?: boolean;
+    action: () => void;
+  }> = [
+    { label: "0", action: () => onScore(0) },
+    { label: "1", action: () => onScore(1) },
+    { label: "2", action: () => onScore(2) },
+    { label: "3", action: () => onScore(3) },
+    { label: "4", action: () => onScore(4) },
+    { label: "6", action: () => onScore(6) },
+    { label: "WIDE", className: "blue", action: () => onScore(0, { extra: "WD" }) },
+    { label: "NO BALL", className: "red small-label", action: () => onScore(0, { extra: "NB" }) },
+    { label: "BYE", className: "purple", action: () => onScore(0, { extra: "B" }) },
+    { label: "LEG BYE", className: "purple small-label", action: () => onScore(0, { extra: "LB" }) },
+    { label: "WICKET", className: "red wicket-label", action: () => onScore(0, { wicket: true }) },
+    {
+      label: (
+        <>
+          <RotateCcw size={24} />
+          <span>UNDO</span>
+        </>
+      ),
+      className: "undo-label",
+      disabled: !canUndo,
+      action: onUndo,
+    },
+  ];
+
+  return (
+    <section className="gully-pad" aria-label="Gully scoring buttons">
+      {buttons.map((button, index) => (
+        <button
+          type="button"
+          key={index}
+          className={button.className ?? ""}
+          disabled={busy || button.disabled || (index !== 11 && !canScore)}
+          onClick={() => {
+            haptic(index === 10 ? [25, 20, 45] : index === 11 ? 8 : 10);
+            button.action();
+          }}
+        >
+          {button.label}
+        </button>
+      ))}
     </section>
   );
 }

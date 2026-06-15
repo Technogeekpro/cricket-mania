@@ -300,6 +300,34 @@ textarea:focus {
   min-width: 0;
 }
 
+.mode-switch {
+  height: 24px;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.mode-switch button {
+  min-height: 0;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  color: rgba(255, 255, 255, 0.68);
+  background: transparent;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.mode-switch button.active {
+  color: var(--brand-deep);
+  background: var(--brand-bg-2);
+}
+
 .live-alert-button {
   min-height: 24px;
   padding: 0 9px;
@@ -675,6 +703,242 @@ textarea:focus {
   font-size: 13px;
   font-weight: 800;
   color: var(--ink);
+}
+
+/* ====== GULLY MODE ====== */
+
+.gully-mode-view,
+.gully-umpire-view {
+  display: flex;
+  min-height: calc(100dvh - 210px);
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gully-score-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border-radius: var(--r-md);
+  color: var(--ink-invert);
+  background:
+    linear-gradient(180deg, rgba(20, 83, 45, 0.08), rgba(20, 83, 45, 0)),
+    linear-gradient(135deg, var(--brand-deep) 0%, var(--brand) 100%);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.gully-score-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gully-score-top > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.gully-score-top span,
+.gully-score-main span,
+.gully-recent > span {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gully-score-top strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.gully-end-btn {
+  flex: 0 0 auto;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  color: var(--brand-deep);
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  box-shadow: var(--shadow-xs);
+}
+
+.gully-score-main {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 6px 0 2px;
+  text-align: center;
+}
+
+.gully-score-main strong {
+  font-size: 72px;
+  line-height: 0.9;
+  font-weight: 900;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  animation: scorePulse 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.gully-score-main small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.gully-score-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gully-score-meta span,
+.gully-result {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  color: var(--ink-invert);
+  background: rgba(255, 255, 255, 0.13);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.gully-result {
+  background: var(--gold-bg);
+  color: #78350f;
+}
+
+.gully-recent {
+  display: grid;
+  gap: 7px;
+}
+
+.gully-recent > div {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.gully-recent b,
+.gully-recent i {
+  flex: 0 0 auto;
+  min-width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  color: var(--brand-deep);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 900;
+  font-style: normal;
+}
+
+.gully-recent b.extra {
+  color: var(--info);
+  background: var(--info-bg);
+}
+
+.gully-recent b.wicket {
+  color: var(--ink-invert);
+  background: var(--danger);
+}
+
+.gully-pad {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 2px 0 4px;
+}
+
+.gully-pad button {
+  min-width: 0;
+  min-height: 86px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 6px;
+  border-radius: var(--r-md);
+  color: var(--brand);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 2px 8px rgba(17, 24, 39, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.gully-pad button:active:not(:disabled) {
+  transform: scale(0.97);
+  box-shadow: 0 1px 4px rgba(17, 24, 39, 0.08);
+}
+
+.gully-pad button.blue {
+  color: var(--info);
+  font-size: 16px;
+}
+
+.gully-pad button.red {
+  color: var(--danger);
+}
+
+.gully-pad button.purple {
+  color: #5b21b6;
+}
+
+.gully-pad button.small-label {
+  font-size: 16px;
+  line-height: 1.05;
+}
+
+.gully-pad button.wicket-label {
+  font-size: 13px;
+}
+
+.gully-pad button.wicket-label::before {
+  content: "|||";
+  display: block;
+  margin-bottom: 3px;
+  font-size: 22px;
+  line-height: 0.8;
+  letter-spacing: -3px;
+}
+
+.gully-pad button.undo-label {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.gully-pad button.undo-label svg {
+  width: 26px;
+  height: 26px;
 }
 
 /* ====== STATS / CREASE ====== */
@@ -1962,6 +2226,15 @@ textarea:focus {
     margin-right: 5px;
   }
 
+  .account-strip {
+    gap: 6px;
+    padding-inline: 10px;
+  }
+
+  .mode-switch button {
+    padding-inline: 6px;
+  }
+
   .over-bowler {
     padding-inline: 8px;
   }
@@ -1973,6 +2246,23 @@ textarea:focus {
   .over-balls {
     gap: 6px;
     padding-inline: 8px;
+  }
+
+  .gully-score-main strong {
+    font-size: 62px;
+  }
+
+  .gully-score-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .gully-pad {
+    gap: 8px;
+  }
+
+  .gully-pad button {
+    min-height: 78px;
+    font-size: 30px;
   }
 
   .score-hero strong {
