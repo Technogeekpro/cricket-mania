@@ -22,8 +22,9 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
+import confettiAnimation from "./assets/Confetti.json";
 import grassGroundLineupUrl from "./assets/grass-ground-lineup.jpg";
 import { supabase } from "./lib/supabase";
 import type { AppRole, CaptainTeam, Delivery, Match, MatchPlayer, Profile, TeamKey, UserRole, WinnerTeam } from "./lib/database.types";
@@ -136,6 +137,24 @@ const readRealtimeString = (row: unknown, key: string) => {
   const value = (row as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
 };
+
+const canUseNotifications = () => typeof window !== "undefined" && "Notification" in window;
+
+const haptic = (pattern: number | number[] = 18) => {
+  if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+    navigator.vibrate(pattern);
+  }
+};
+
+const liveScoreText = (match: Match) =>
+  `${teamLabel(match.batting_team_key, match)} ${match.runs}/${match.wickets} (${getOvers(match.legal_balls)}/${match.total_overs} ov)`;
+
+const confettiMeta = confettiAnimation as { fr?: number; op?: number };
+const CONFETTI_DURATION_MS = Math.min(
+  6500,
+  Math.max(3200, Math.round(((confettiMeta.op ?? 125) / (confettiMeta.fr ?? 25)) * 1000)),
+);
+const CONFETTI_COLORS = ["#22c55e", "#facc15", "#38bdf8", "#ef4444", "#38bdf8", "#ffffff"];
 
 const playerImpact = (player: MatchPlayer) =>
   player.runs_scored +
@@ -326,6 +345,12 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [career, setCareer] = useState<CareerStats | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() =>
+    canUseNotifications() ? Notification.permission : "denied",
+  );
+  const [celebrationMatchId, setCelebrationMatchId] = useState<string | null>(null);
+  const [celebratedMatchId, setCelebratedMatchId] = useState<string | null>(null);
+  const lastScoreSignatureRef = useRef("");
 
   const activeMatch = useMemo(
     () => matches.find((match) => match.id === activeMatchId) ?? matches[0] ?? null,
@@ -363,6 +388,55 @@ export function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => {
+        // Notifications still work in foreground without the service worker.
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeMatch) {
+      lastScoreSignatureRef.current = "";
+      return;
+    }
+
+    const signature = [
+      activeMatch.id,
+      activeMatch.runs,
+      activeMatch.wickets,
+      activeMatch.legal_balls,
+      activeMatch.current_innings,
+      activeMatch.status,
+      activeMatch.winner_team ?? "",
+    ].join(":");
+
+    if (!lastScoreSignatureRef.current) {
+      lastScoreSignatureRef.current = signature;
+      return;
+    }
+
+    if (lastScoreSignatureRef.current === signature) {
+      return;
+    }
+
+    lastScoreSignatureRef.current = signature;
+    if (activeMatch.status === "completed" && activeMatch.winner_team && activeMatch.winner_team !== "tie") {
+      haptic([40, 30, 70, 30, 120]);
+      if (celebratedMatchId !== activeMatch.id) {
+        setCelebratedMatchId(activeMatch.id);
+        setCelebrationMatchId(activeMatch.id);
+      }
+    } else {
+      haptic(12);
+    }
+
+    if (document.visibilityState !== "visible") {
+      void showLiveNotification(activeMatch);
+    }
+  }, [activeMatch, celebratedMatchId]);
 
   useEffect(() => {
     if (!session?.user) {
@@ -695,6 +769,54 @@ export function App() {
     setCareer(stats);
   }
 
+  async function enableLiveNotifications() {
+    if (!canUseNotifications()) {
+      setNotice("Live notifications are not supported in this browser.");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission === "granted") {
+      setNotice("Live score notifications enabled.");
+      if ("serviceWorker" in navigator) {
+        await navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      }
+      if (activeMatch) {
+        await showLiveNotification(activeMatch, true);
+      }
+    } else {
+      setNotice("Notifications were not enabled.");
+    }
+  }
+
+  async function showLiveNotification(match: Match, force = false) {
+    if (!canUseNotifications() || Notification.permission !== "granted") {
+      return;
+    }
+
+    const title = match.status === "completed" ? "Match result" : "Live cricket score";
+    const body = match.status === "completed" ? matchResultNote(match) ?? liveScoreText(match) : `${match.title} · ${liveScoreText(match)}`;
+    const options: NotificationOptions = {
+      body,
+      tag: `cricket-live-${match.id}`,
+      silent: !force,
+      badge: "/icon.svg",
+      icon: "/icon.svg",
+      data: { url: window.location.href },
+    };
+
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.ready.catch(() => null);
+      if (registration) {
+        await registration.showNotification(title, options);
+        return;
+      }
+    }
+
+    new Notification(title, options);
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setTab("scoreboard");
@@ -814,6 +936,7 @@ export function App() {
       return;
     }
 
+    haptic(options.wicket ? [25, 20, 45] : 10);
     setBusy(true);
     const { error } = await supabase.rpc("score_match_delivery", {
       p_match_id: activeMatch.id,
@@ -848,6 +971,7 @@ export function App() {
     }
 
     setNotice("Last ball undone.");
+    haptic(8);
     await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
   }
 
@@ -1032,6 +1156,7 @@ export function App() {
       return;
     }
 
+    haptic(12);
     await Promise.all([loadMatches(), loadMatchPlayers(activeMatch.id)]);
   }
 
@@ -1287,7 +1412,14 @@ export function App() {
           </div>
           <div className="account-strip">
             <span>{profile?.display_name ?? session.user.email}</span>
-            <strong>{role}</strong>
+            <div className="account-actions">
+              {canUseNotifications() && notificationPermission !== "granted" && activeMatch && (
+                <button className="live-alert-button" onClick={enableLiveNotifications}>
+                  Live alerts
+                </button>
+              )}
+              <strong>{role}</strong>
+            </div>
           </div>
         </header>
 
@@ -1422,8 +1554,50 @@ export function App() {
             />
           )}
         </nav>
+        {celebrationMatchId && activeMatch?.id === celebrationMatchId && (
+          <WinCelebration
+            match={activeMatch}
+            durationMs={CONFETTI_DURATION_MS}
+            onDone={() => setCelebrationMatchId(null)}
+          />
+        )}
       </section>
     </main>
+  );
+}
+
+function WinCelebration({ match, durationMs, onDone }: { match: Match; durationMs: number; onDone: () => void }) {
+  useEffect(() => {
+    const timer = window.setTimeout(onDone, durationMs);
+    return () => window.clearTimeout(timer);
+  }, [durationMs, onDone]);
+
+  const result = matchResultNote(match) ?? `${teamLabel(match.winner_team === "b" ? "b" : "a", match)} won`;
+
+  return (
+    <div className="win-celebration" role="status" aria-live="polite">
+      <div className="confetti-rain" aria-hidden="true">
+        {Array.from({ length: 48 }, (_, index) => (
+          <i
+            key={index}
+            style={
+              {
+                "--i": index,
+                "--color": CONFETTI_COLORS[index % CONFETTI_COLORS.length],
+              } as CSSProperties
+            }
+          />
+        ))}
+      </div>
+      <div className="win-card">
+        <Trophy size={34} />
+        <span>Match complete</span>
+        <strong>{result}</strong>
+        <button className="secondary-action" onClick={onDone}>
+          Close
+        </button>
+      </div>
+    </div>
   );
 }
 

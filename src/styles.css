@@ -72,6 +72,7 @@ body,
   min-width: 320px;
   min-height: 100%;
   margin: 0;
+  overflow-x: hidden;
 }
 
 button,
@@ -126,6 +127,7 @@ textarea:focus {
   display: flex;
   justify-content: center;
   background: var(--bg-base);
+  overflow-x: hidden;
 }
 
 .phone-shell {
@@ -221,6 +223,9 @@ textarea:focus {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 14px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink-invert-soft);
   background: transparent;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -242,6 +247,10 @@ textarea:focus {
 }
 
 .match-strip span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -264,9 +273,32 @@ textarea:focus {
 }
 
 .account-strip span {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.live-alert-button {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: var(--r-xs);
+  color: var(--brand-bg-2);
+  background: rgba(21, 128, 61, 0.34);
+  border: 1px solid rgba(187, 247, 208, 0.28);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
   white-space: nowrap;
 }
 
@@ -290,6 +322,7 @@ textarea:focus {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px 12px 16px;
   background: var(--bg-base);
   -webkit-overflow-scrolling: touch;
@@ -704,6 +737,8 @@ textarea:focus {
 .over-table {
   display: flex;
   flex-direction: column;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid var(--hairline);
   border-radius: var(--r-sm);
   overflow: hidden;
@@ -713,6 +748,7 @@ textarea:focus {
 .over-row {
   display: flex;
   align-items: stretch;
+  min-width: 0;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -757,6 +793,8 @@ textarea:focus {
 
 .over-balls {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -778,17 +816,25 @@ textarea:focus {
 
 .over-ball {
   flex: 0 0 auto;
-  width: 28px;
+  min-width: 28px;
+  max-width: 58px;
+  width: auto;
   height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
   color: var(--ink-2);
   background: var(--surface-tint);
   border: 1px solid var(--hairline);
   font-size: 11px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   scroll-snap-align: start;
 }
 
@@ -1636,6 +1682,106 @@ textarea:focus {
 
 /* ====== UTIL / ANIMATION ====== */
 
+.win-celebration {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(2px);
+}
+
+.confetti-rain {
+  position: absolute;
+  inset: -12% 0 0;
+  pointer-events: none;
+}
+
+.confetti-rain i {
+  --lane: calc(var(--i) % 12);
+  --delay-step: calc(var(--i) % 9);
+  --spin-step: calc(var(--i) % 5);
+  position: absolute;
+  top: -42px;
+  left: calc((var(--lane) * 8.333%) + 2%);
+  width: 9px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--color);
+  opacity: 0.95;
+  transform: rotate(calc(var(--spin-step) * 28deg));
+  animation: confettiDrop 3.2s linear infinite;
+  animation-delay: calc(var(--delay-step) * -0.28s);
+}
+
+.confetti-rain i:nth-child(3n) {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.confetti-rain i:nth-child(4n) {
+  width: 15px;
+  height: 8px;
+}
+
+.win-card {
+  position: relative;
+  width: min(100%, 310px);
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 22px 18px;
+  border-radius: var(--r-md);
+  color: var(--ink-invert);
+  background: linear-gradient(180deg, #14532d 0%, #15803d 100%);
+  border: 1px solid rgba(187, 247, 208, 0.38);
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.28);
+  text-align: center;
+}
+
+.win-card svg {
+  color: #fde68a;
+}
+
+.win-card span {
+  color: var(--ink-invert-soft);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+.win-card strong {
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: -0.2px;
+}
+
+.win-card .secondary-action {
+  width: 100%;
+  margin-top: 4px;
+  color: var(--brand-deep);
+  background: var(--surface);
+}
+
+@keyframes confettiDrop {
+  0% {
+    transform: translate3d(-12px, -48px, 0) rotate(0deg);
+  }
+
+  50% {
+    transform: translate3d(18px, 54dvh, 0) rotate(210deg);
+  }
+
+  100% {
+    transform: translate3d(-8px, 112dvh, 0) rotate(420deg);
+  }
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -1660,6 +1806,25 @@ textarea:focus {
 
   .screen-body {
     padding-inline: 10px;
+  }
+
+  .match-strip {
+    gap: 7px;
+    padding-inline: 10px;
+  }
+
+  .match-strip span + span::before {
+    margin-right: 5px;
+  }
+
+  .over-bowler {
+    flex-basis: 78px;
+    padding-inline: 8px;
+  }
+
+  .over-balls {
+    gap: 6px;
+    padding-inline: 8px;
   }
 
   .score-hero strong {

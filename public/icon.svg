@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Cricket Mania">
+  <rect width="192" height="192" rx="42" fill="#0f172a"/>
+  <circle cx="96" cy="96" r="62" fill="#15803d"/>
+  <path d="M57 114c24-30 54-48 88-54" fill="none" stroke="#f8fafc" stroke-width="14" stroke-linecap="round"/>
+  <path d="M62 126c25-19 53-31 83-36" fill="none" stroke="#bbf7d0" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="130" cy="72" r="9" fill="#facc15"/>
+</svg>
