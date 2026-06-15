@@ -1028,6 +1028,57 @@ textarea:focus {
   box-shadow: var(--shadow-xs);
 }
 
+.google-action {
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.google-action:hover:not(:disabled) {
+  background: var(--surface-tint);
+  border-color: var(--ink-faint);
+}
+
+.google-action svg {
+  flex-shrink: 0;
+}
+
+.auth-divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2px 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+
+.auth-divider span {
+  padding: 0 10px;
+}
+
 /* ====== ACTIONS ====== */
 
 .primary-action,
@@ -1741,12 +1792,61 @@ textarea:focus {
   color: var(--ink-soft);
 }
 
+.claim-card strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .claim-card:disabled {
   background: var(--surface-tint);
   cursor: not-allowed;
 }
 
 /* ====== TEAM BRAND FORM ====== */
+
+.captain-team-form,
+.open-team-list {
+  display: grid;
+  gap: 10px;
+}
+
+.open-team-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.open-team-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.open-team-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-team-row small {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
 
 .team-brand-form {
   display: grid;

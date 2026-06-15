@@ -26,7 +26,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import type { Session } from "@supabase/supabase-js";
 import grassGroundLineupUrl from "./assets/grass-ground-lineup.jpg";
 import { supabase } from "./lib/supabase";
-import type { AppRole, Delivery, Match, MatchPlayer, Profile, TeamKey, UserRole, WinnerTeam } from "./lib/database.types";
+import type { AppRole, CaptainTeam, Delivery, Match, MatchPlayer, Profile, TeamKey, UserRole, WinnerTeam } from "./lib/database.types";
 
 type Tab = "scoreboard" | "players" | "team" | "umpire" | "manage";
 type ExtraType = "WD" | "NB" | "B" | "LB";
@@ -92,9 +92,12 @@ const requiredRunRate = (target: number, runs: number, totalBalls: number, legal
 };
 
 const teamLabel = (key: TeamKey, match?: Match | null) =>
-  match ? (key === "a" ? match.team_a_name : match.team_b_name) || (key === "a" ? "Team A" : "Team B") : key === "a" ? "Team A" : "Team B";
+  match
+    ? (key === "a" ? match.team_a_name : match.team_b_name) || (key === "a" ? "First team" : "Second team")
+    : key === "a"
+      ? "First team"
+      : "Second team";
 const teamLogoUrl = (key: TeamKey, match: Match) => (key === "a" ? match.team_a_logo_url : match.team_b_logo_url);
-const teamLogoPath = (key: TeamKey, match: Match) => (key === "a" ? match.team_a_logo_path : match.team_b_logo_path);
 const matchResultNote = (match: Match) =>
   match.result_note?.replace(/^Team A/, teamLabel("a", match)).replace(/^Team B/, teamLabel("b", match)) ?? null;
 const otherTeam = (key: TeamKey): TeamKey => (key === "a" ? "b" : "a");
@@ -255,8 +258,8 @@ async function uploadAvatarBlob(userId: string, blob: Blob, oldPath?: string | n
   return profile as Profile;
 }
 
-async function uploadTeamLogoBlob(userId: string, teamKey: TeamKey, blob: Blob) {
-  const path = `${userId}/team-${teamKey}-${Date.now()}.webp`;
+async function uploadTeamLogoBlob(userId: string, scope: string, blob: Blob) {
+  const path = `${userId}/team-${scope}-${Date.now()}.webp`;
   const { error: uploadError } = await supabase.storage.from(TEAM_LOGOS_BUCKET).upload(path, blob, {
     contentType: "image/webp",
     cacheControl: "31536000",
@@ -308,6 +311,7 @@ export function App() {
   const [matchPlayers, setMatchPlayers] = useState<MatchPlayer[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [roles, setRoles] = useState<UserRole[]>([]);
+  const [captainTeams, setCaptainTeams] = useState<CaptainTeam[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("scoreboard");
   const [notice, setNotice] = useState("");
@@ -323,6 +327,7 @@ export function App() {
   const isCaptain = role === "captain";
   const captainTeamKey =
     activeMatch?.captain_a_id === session?.user.id ? "a" : activeMatch?.captain_b_id === session?.user.id ? "b" : null;
+  const ownedCaptainTeam = captainTeams.find((team) => team.captain_id === session?.user.id) ?? null;
   const showTeamTab = !isAdmin && (isCaptain || Boolean(captainTeamKey));
 
   useEffect(() => {
@@ -357,6 +362,7 @@ export function App() {
       setMatchPlayers([]);
       setProfiles([]);
       setRoles([]);
+      setCaptainTeams([]);
       return;
     }
 
@@ -388,6 +394,9 @@ export function App() {
         if (session.user) {
           void loadMyCareer(session.user.id);
         }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "captain_teams" }, () => {
+        void loadCaptainTeams();
       })
       .subscribe();
 
@@ -452,6 +461,7 @@ export function App() {
         setMatchPlayers([]);
         setProfiles([]);
         setRoles([]);
+        setCaptainTeams([]);
         return;
       }
       setRole(roleData?.role ?? "player");
@@ -465,9 +475,23 @@ export function App() {
       if (roleData?.role === "admin" || roleData?.role === "captain" || assignedAsCaptain) {
         await loadPlayerProfiles(roleData?.role === "admin");
       }
+      if (roleData?.role === "admin" || roleData?.role === "captain" || assignedAsCaptain) {
+        await loadCaptainTeams();
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  async function loadCaptainTeams() {
+    const { data, error } = await supabase.from("captain_teams").select("*").order("created_at", { ascending: false });
+    if (error) {
+      setNotice(error.message);
+      return [];
+    }
+
+    setCaptainTeams(data ?? []);
+    return data ?? [];
   }
 
   async function loadMatches() {
@@ -541,7 +565,7 @@ export function App() {
   }
 
   async function loadAdminLists() {
-    await loadPlayerProfiles(true);
+    await Promise.all([loadPlayerProfiles(true), loadCaptainTeams()]);
   }
 
   async function loadMyCareer(userId: string) {
@@ -663,7 +687,21 @@ export function App() {
     const venue = String(formData.get("venue") ?? "Local Turf").trim() || "Local Turf";
     const teamSize = Number(formData.get("teamSize") ?? 6);
     const totalOvers = Math.max(1, Math.min(50, Math.round(Number(formData.get("totalOvers") ?? 6) || 6)));
+    const teamAId = String(formData.get("teamAId") ?? "");
+    const teamBId = String(formData.get("teamBId") ?? "");
     const tossWinner: TeamKey = String(formData.get("tossWinner") ?? "a") === "b" ? "b" : "a";
+    const teamA = captainTeams.find((team) => team.id === teamAId && team.captain_id);
+    const teamB = captainTeams.find((team) => team.id === teamBId && team.captain_id);
+
+    if (!teamA || !teamB) {
+      setNotice("Choose two captain-created teams.");
+      return;
+    }
+
+    if (teamA.id === teamB.id || teamA.captain_id === teamB.captain_id) {
+      setNotice("Choose two different teams.");
+      return;
+    }
 
     setBusy(true);
     const { data, error } = await supabase
@@ -674,6 +712,14 @@ export function App() {
         team_size: teamSize,
         status: "setup",
         total_overs: totalOvers,
+        captain_a_id: teamA.captain_id,
+        captain_b_id: teamB.captain_id,
+        team_a_name: teamA.name,
+        team_b_name: teamB.name,
+        team_a_logo_url: teamA.logo_url,
+        team_b_logo_url: teamB.logo_url,
+        team_a_logo_path: teamA.logo_path,
+        team_b_logo_path: teamB.logo_path,
         toss_winner: tossWinner,
         draft_turn: tossWinner,
         first_batting_team: tossWinner,
@@ -693,6 +739,24 @@ export function App() {
 
     setNotice(`Match created. ${teamLabel(tossWinner, data as Match)} won the toss and picks first.`);
     setActiveMatchId(data.id);
+
+    const captainRows = [
+      { profile: profiles.find((item) => item.id === teamA.captain_id), team: teamA, team_key: "a" as const },
+      { profile: profiles.find((item) => item.id === teamB.captain_id), team: teamB, team_key: "b" as const },
+    ].map(({ profile, team, team_key }) => ({
+      match_id: data.id,
+      profile_id: profile?.id ?? team.captain_id,
+      display_name: profile?.display_name ?? `${team.name} Captain`,
+      team_key,
+      is_captain: true,
+      skills: profile?.skills ?? [],
+      avatar_url: profile?.avatar_url ?? null,
+    }));
+
+    const { error: playerError } = await supabase.from("match_players").insert(captainRows);
+    if (playerError) {
+      setNotice(playerError.message);
+    }
 
     await loadMatches();
     await loadMatchPlayers(data.id);
@@ -971,24 +1035,22 @@ export function App() {
     await loadAdminLists();
   }
 
-  async function updateTeamBranding(teamKey: TeamKey, values: { name: string; logoFile?: File | null }) {
-    if (!activeMatch || !session?.user) {
+  async function saveCaptainTeam(values: { name: string; logoFile?: File | null }) {
+    if (!session?.user || !isCaptain) {
       return;
     }
 
-    const oldLogoPath = teamLogoPath(teamKey, activeMatch);
+    const oldLogoPath = ownedCaptainTeam?.logo_path ?? null;
     setBusy(true);
     try {
       let logo: { path: string; publicUrl: string } | null = null;
       if (values.logoFile) {
         const blob = await compressSquareAvatar(values.logoFile);
-        logo = await uploadTeamLogoBlob(session.user.id, teamKey, blob);
+        logo = await uploadTeamLogoBlob(session.user.id, "captain", blob);
       }
 
-      const { error } = await supabase.rpc("update_match_team_branding", {
-        p_match_id: activeMatch.id,
-        p_team_key: teamKey,
-        p_team_name: values.name,
+      const { data, error } = await supabase.rpc("save_captain_team", {
+        p_name: values.name,
         p_logo_url: logo?.publicUrl ?? null,
         p_logo_path: logo?.path ?? null,
       });
@@ -997,17 +1059,75 @@ export function App() {
         throw error;
       }
 
+      const savedTeam = (Array.isArray(data) ? data[0] : data) as CaptainTeam;
+      if (!savedTeam) {
+        throw new Error("Team was not saved.");
+      }
+      if (activeMatch && captainTeamKey) {
+        const { error: brandingError } = await supabase.rpc("update_match_team_branding", {
+          p_match_id: activeMatch.id,
+          p_team_key: captainTeamKey,
+          p_team_name: savedTeam.name,
+          p_logo_url: savedTeam.logo_url,
+          p_logo_path: savedTeam.logo_path,
+        });
+
+        if (brandingError) {
+          throw brandingError;
+        }
+      }
+
       if (logo && oldLogoPath && oldLogoPath !== logo.path) {
         await supabase.storage.from(TEAM_LOGOS_BUCKET).remove([oldLogoPath]);
       }
 
-      setNotice("Team branding updated.");
-      await loadMatches();
+      setNotice("Team saved.");
+      await Promise.all([loadCaptainTeams(), loadMatches()]);
     } catch (error) {
-      setNotice(formatErrorMessage(error, "Unable to update team branding."));
+      setNotice(formatErrorMessage(error, "Unable to save team."));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function exitCaptainTeam(teamId: string) {
+    if (!isCaptain) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.rpc("exit_captain_team", {
+      p_team_id: teamId,
+    });
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to exit team."));
+      return;
+    }
+
+    setNotice("You exited the team. Another captain can join it now.");
+    await loadCaptainTeams();
+  }
+
+  async function joinCaptainTeam(teamId: string) {
+    if (!isCaptain) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.rpc("join_captain_team", {
+      p_team_id: teamId,
+    });
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to join team."));
+      return;
+    }
+
+    setNotice("Team joined.");
+    await loadCaptainTeams();
   }
 
   async function updateRole(profileId: string, nextRole: AppRole) {
@@ -1184,13 +1304,18 @@ export function App() {
               busy={busy}
               match={activeMatch}
               profiles={profiles}
+              captainTeams={captainTeams}
+              ownedCaptainTeam={ownedCaptainTeam}
               matchPlayers={matchPlayers}
               teamKey={captainTeamKey}
               currentUserId={session.user.id}
               onClaimTeam={claimTeam}
               onAddPlayer={addTeamPlayer}
-              onUpdateBranding={updateTeamBranding}
+              onSaveCaptainTeam={saveCaptainTeam}
+              onExitCaptainTeam={exitCaptainTeam}
+              onJoinCaptainTeam={joinCaptainTeam}
               onRefresh={() => {
+                void loadCaptainTeams();
                 void loadPlayerProfiles(isAdmin);
                 if (activeMatch?.id) {
                   void loadMatchPlayers(activeMatch.id);
@@ -1221,6 +1346,7 @@ export function App() {
               match={activeMatch}
               profiles={profiles}
               roles={roles}
+              captainTeams={captainTeams}
               currentUserId={session.user.id}
               onCreateMatch={createMatch}
               onUpdateRole={updateRole}
@@ -1335,6 +1461,23 @@ function AuthScreen() {
     setMessage(mode === "signup" ? "Account created. Check your email if confirmation is enabled." : "Logged in.");
   }
 
+  async function signInWithGoogle() {
+    setBusy(true);
+    setMessage("");
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: getAuthRedirectUrl(),
+        queryParams: { prompt: "select_account" },
+      },
+    });
+    if (error) {
+      setBusy(false);
+      setMessage(error.message);
+    }
+    // On success Supabase redirects to Google; the browser will navigate away.
+  }
+
   function previewAvatar(file: File | null) {
     setAvatarFile(file);
     if (!file) {
@@ -1371,6 +1514,15 @@ function AuthScreen() {
             <button type="button" className={mode === "signup" ? "selected" : ""} onClick={() => setMode("signup")}>
               Create
             </button>
+          </div>
+
+          <button type="button" className="google-action" disabled={busy} onClick={() => void signInWithGoogle()}>
+            <GoogleIcon />
+            <span>{mode === "signup" ? "Sign up with Google" : "Continue with Google"}</span>
+          </button>
+
+          <div className="auth-divider" aria-hidden="true">
+            <span>or use email</span>
           </div>
 
           {mode === "signup" && (
@@ -1824,31 +1976,70 @@ function CaptainTeamView({
   busy,
   match,
   profiles,
+  captainTeams,
+  ownedCaptainTeam,
   matchPlayers,
   teamKey,
   currentUserId,
   onClaimTeam,
   onAddPlayer,
-  onUpdateBranding,
+  onSaveCaptainTeam,
+  onExitCaptainTeam,
+  onJoinCaptainTeam,
   onRefresh,
 }: {
   busy: boolean;
   match: Match | null;
   profiles: Profile[];
+  captainTeams: CaptainTeam[];
+  ownedCaptainTeam: CaptainTeam | null;
   matchPlayers: MatchPlayer[];
   teamKey: "a" | "b" | null;
   currentUserId: string;
   onClaimTeam: (teamKey: TeamKey) => void;
   onAddPlayer: (profileId: string) => void;
-  onUpdateBranding: (teamKey: TeamKey, values: { name: string; logoFile?: File | null }) => void;
+  onSaveCaptainTeam: (values: { name: string; logoFile?: File | null }) => void;
+  onExitCaptainTeam: (teamId: string) => void;
+  onJoinCaptainTeam: (teamId: string) => void;
   onRefresh: () => void;
 }) {
+  const [lineupOpen, setLineupOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const openTeams = captainTeams.filter((team) => !team.captain_id);
+
+  const teamSetup = (
+    <CaptainOwnedTeamPanel
+      busy={busy}
+      openTeams={openTeams}
+      ownedTeam={ownedCaptainTeam}
+      onExitTeam={onExitCaptainTeam}
+      onJoinTeam={onJoinCaptainTeam}
+      onSaveTeam={onSaveCaptainTeam}
+    />
+  );
+
   if (!match) {
     return (
-      <section className="panel empty-state">
-        <Swords size={34} />
-        <h2>No match selected</h2>
-        <p>Once an admin creates a match, captains can claim teams and build their squads here.</p>
+      <section className="stack">
+        {teamSetup}
+        <section className="panel empty-state">
+          <Swords size={34} />
+          <h2>No match selected</h2>
+          <p>Create your team profile first. Once an admin creates a match, your team will be available for play.</p>
+        </section>
+      </section>
+    );
+  }
+
+  if (!ownedCaptainTeam) {
+    return (
+      <section className="stack">
+        {teamSetup}
+        <section className="panel empty-state compact">
+          <Swords size={30} />
+          <h2>Create a team first</h2>
+          <p>Captains need a team name and display picture before joining or drafting in a match.</p>
+        </section>
       </section>
     );
   }
@@ -1856,6 +2047,7 @@ function CaptainTeamView({
   if (!teamKey) {
     return (
       <section className="stack">
+        {teamSetup}
         <section className="panel">
           <div className="panel-title">
             <h3>Claim team</h3>
@@ -1872,8 +2064,11 @@ function CaptainTeamView({
                   key={key}
                   onClick={() => onClaimTeam(key)}
                 >
-                  <TeamBadge match={match} teamKey={key} />
-                  <span>{isMine ? "Your team" : claimedBy ? "Claimed" : "Claim"}</span>
+                  <span className="team-logo">
+                    {ownedCaptainTeam.logo_url ? <img src={ownedCaptainTeam.logo_url} alt={`${ownedCaptainTeam.name} logo`} /> : ownedCaptainTeam.name.slice(0, 1)}
+                  </span>
+                  <strong>{claimedBy ? teamLabel(key, match) : ownedCaptainTeam.name}</strong>
+                  <span>{isMine ? "Your team" : claimedBy ? "Claimed" : key === match.toss_winner ? "Join toss winner slot" : "Join second slot"}</span>
                 </button>
               );
             })}
@@ -1896,8 +2091,6 @@ function CaptainTeamView({
   const isFull = teamRows.length >= match.team_size;
   const bothCaptainsReady = Boolean(match.captain_a_id && match.captain_b_id);
   const isMyTurn = match.draft_turn === teamKey;
-  const [lineupOpen, setLineupOpen] = useState(false);
-  const [draftOpen, setDraftOpen] = useState(false);
   const draftStatusText = !bothCaptainsReady
     ? "Waiting for both captains to claim teams."
     : isFull
@@ -1916,41 +2109,7 @@ function CaptainTeamView({
         <span className="team-logo large">{currentTeamLogo ? <img src={currentTeamLogo} alt={`${currentTeamName} logo`} /> : currentTeamName.slice(0, 1)}</span>
       </div>
 
-      <form
-        className="panel team-brand-form"
-        onSubmit={(event: FormEvent<HTMLFormElement>) => {
-          event.preventDefault();
-          const formData = new FormData(event.currentTarget);
-          const logoFile = formData.get("logoFile");
-          onUpdateBranding(teamKey, {
-            name: String(formData.get("teamName") ?? currentTeamName),
-            logoFile: logoFile instanceof File && logoFile.size > 0 ? logoFile : null,
-          });
-          const input = event.currentTarget.querySelector<HTMLInputElement>('input[name="logoFile"]');
-          if (input) input.value = "";
-        }}
-      >
-        <div className="panel-title">
-          <h3>Team identity</h3>
-          <span>{teamRows.length}/{match.team_size}</span>
-        </div>
-        <label className="field">
-          <span>Team name</span>
-          <input name="teamName" defaultValue={currentTeamName} placeholder="Team name" />
-        </label>
-        <label className="avatar-picker team-logo-picker">
-          <span className="team-logo">{currentTeamLogo ? <img src={currentTeamLogo} alt={`${currentTeamName} logo`} /> : <Camera size={24} />}</span>
-          <span>
-            Team logo
-            <small>1:1 square, compressed before upload</small>
-          </span>
-          <input name="logoFile" aria-label="Team logo" accept="image/png,image/jpeg,image/webp" type="file" />
-        </label>
-        <button className="primary-action" disabled={busy}>
-          <Camera size={18} />
-          Save team
-        </button>
-      </form>
+      {teamSetup}
 
       <div className="panel lineup-summary">
         <button
@@ -2022,6 +2181,96 @@ function CaptainTeamView({
           onRefresh={onRefresh}
           onClose={() => setDraftOpen(false)}
         />
+      )}
+    </section>
+  );
+}
+
+function CaptainOwnedTeamPanel({
+  busy,
+  ownedTeam,
+  openTeams,
+  onSaveTeam,
+  onExitTeam,
+  onJoinTeam,
+}: {
+  busy: boolean;
+  ownedTeam: CaptainTeam | null;
+  openTeams: CaptainTeam[];
+  onSaveTeam: (values: { name: string; logoFile?: File | null }) => void;
+  onExitTeam: (teamId: string) => void;
+  onJoinTeam: (teamId: string) => void;
+}) {
+  return (
+    <section className="panel team-brand-form">
+      <form
+        className="captain-team-form"
+        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          event.preventDefault();
+          const formData = new FormData(event.currentTarget);
+          const logoFile = formData.get("logoFile");
+          onSaveTeam({
+            name: String(formData.get("teamName") ?? ownedTeam?.name ?? "").trim(),
+            logoFile: logoFile instanceof File && logoFile.size > 0 ? logoFile : null,
+          });
+          const input = event.currentTarget.querySelector<HTMLInputElement>('input[name="logoFile"]');
+          if (input) input.value = "";
+        }}
+      >
+        <div className="panel-title">
+          <h3>{ownedTeam ? "Your team" : "Create team"}</h3>
+          <span>{ownedTeam ? "Captain" : "Required"}</span>
+        </div>
+        <label className="field">
+          <span>Team name</span>
+          <input name="teamName" defaultValue={ownedTeam?.name ?? ""} placeholder="Enter team name" />
+        </label>
+        <label className="avatar-picker team-logo-picker">
+          <span className="team-logo">
+            {ownedTeam?.logo_url ? <img src={ownedTeam.logo_url} alt={`${ownedTeam.name} logo`} /> : <Camera size={24} />}
+          </span>
+          <span>
+            Team display picture
+            <small>1:1 square, compressed before upload</small>
+          </span>
+          <input name="logoFile" aria-label="Team display picture" accept="image/png,image/jpeg,image/webp" type="file" />
+        </label>
+        <div className="dual-actions">
+          <button className="primary-action" disabled={busy}>
+            <Camera size={18} />
+            {ownedTeam ? "Save team" : "Create team"}
+          </button>
+          {ownedTeam && (
+            <button
+              type="button"
+              className="secondary-action danger-soft"
+              disabled={busy}
+              onClick={() => onExitTeam(ownedTeam.id)}
+            >
+              Exit team
+            </button>
+          )}
+        </div>
+      </form>
+
+      {!ownedTeam && openTeams.length > 0 && (
+        <div className="open-team-list">
+          <div className="draft-section-label">Open teams</div>
+          {openTeams.map((team) => (
+            <article className="open-team-row" key={team.id}>
+              <span className="team-logo">
+                {team.logo_url ? <img src={team.logo_url} alt={`${team.name} logo`} /> : team.name.slice(0, 1)}
+              </span>
+              <div>
+                <strong>{team.name}</strong>
+                <small>No captain right now</small>
+              </div>
+              <button className="tiny-action accent" disabled={busy} onClick={() => onJoinTeam(team.id)}>
+                Join
+              </button>
+            </article>
+          ))}
+        </div>
       )}
     </section>
   );
@@ -2351,6 +2600,7 @@ function ManageView({
   match,
   profiles,
   roles,
+  captainTeams,
   currentUserId,
   onCreateMatch,
   onUpdateRole,
@@ -2363,6 +2613,7 @@ function ManageView({
   match: Match | null;
   profiles: Profile[];
   roles: UserRole[];
+  captainTeams: CaptainTeam[];
   currentUserId: string;
   onCreateMatch: (formData: FormData) => void;
   onUpdateRole: (profileId: string, nextRole: AppRole) => void;
@@ -2374,9 +2625,17 @@ function ManageView({
   const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
   const [showNewMatch, setShowNewMatch] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const activeCaptainTeams = captainTeams.filter((team) => team.captain_id);
+  const [selectedTeamAId, setSelectedTeamAId] = useState("");
+  const [selectedTeamBId, setSelectedTeamBId] = useState("");
   const matchInProgress = match !== null && match.status !== "completed";
   const showCreateForm = !matchInProgress || showNewMatch;
   const selectedProfile = profiles.find((item) => item.id === selectedProfileId) ?? null;
+  const teamA = activeCaptainTeams.find((team) => team.id === selectedTeamAId) ?? activeCaptainTeams[0] ?? null;
+  const teamB =
+    activeCaptainTeams.find((team) => team.id === selectedTeamBId && team.id !== teamA?.id) ??
+    activeCaptainTeams.find((team) => team.id !== teamA?.id) ??
+    null;
 
   if (selectedProfile) {
     return (
@@ -2422,8 +2681,43 @@ function ManageView({
             <h3>{matchInProgress ? "Start another match" : "Create match"}</h3>
             <span>Admin</span>
           </div>
+          {activeCaptainTeams.length < 2 && (
+            <p className="empty-note">At least two captains need to create teams before an admin can create a match.</p>
+          )}
           <input name="title" placeholder="Sunday Turf Match" />
           <input name="venue" placeholder="Local Turf" />
+          <div className="split-inputs">
+            <label className="field">
+              <span>First team</span>
+              <select
+                name="teamAId"
+                value={teamA?.id ?? ""}
+                onChange={(event) => setSelectedTeamAId(event.target.value)}
+              >
+                <option value="">Select team</option>
+                {activeCaptainTeams.map((team) => (
+                  <option value={team.id} key={team.id} disabled={team.id === teamB?.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Second team</span>
+              <select
+                name="teamBId"
+                value={teamB?.id ?? ""}
+                onChange={(event) => setSelectedTeamBId(event.target.value)}
+              >
+                <option value="">Select team</option>
+                {activeCaptainTeams.map((team) => (
+                  <option value={team.id} key={team.id} disabled={team.id === teamA?.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="split-inputs">
             <label className="field">
               <span>Team size</span>
@@ -2443,12 +2737,12 @@ function ManageView({
           <label className="field">
             <span>Toss winner / first pick</span>
             <select name="tossWinner" defaultValue="a">
-              <option value="a">Team A</option>
-              <option value="b">Team B</option>
+              <option value="a">{teamA?.name ?? "First team"}</option>
+              <option value="b">{teamB?.name ?? "Second team"}</option>
             </select>
           </label>
           <div className="dual-actions">
-            <button type="submit" className="primary-action" disabled={busy}>
+            <button type="submit" className="primary-action" disabled={busy || activeCaptainTeams.length < 2}>
               <Plus size={19} />
               Create match
             </button>
@@ -2783,6 +3077,29 @@ function ProfilePhoto({ profile, size = "normal" }: { profile: Profile | null; s
     <span className={`profile-photo ${size}`}>
       {profile?.avatar_url ? <img src={profile.avatar_url} alt={`${profile.display_name} profile`} /> : initial}
     </span>
+  );
+}
+
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        d="M21.6 12.227c0-.71-.064-1.39-.182-2.045H12v3.867h5.382a4.604 4.604 0 0 1-1.996 3.018v2.51h3.229c1.89-1.74 2.985-4.305 2.985-7.35z"
+        fill="#4285F4"
+      />
+      <path
+        d="M12 22c2.7 0 4.964-.895 6.619-2.423l-3.23-2.51c-.895.6-2.04.955-3.389.955-2.605 0-4.81-1.76-5.598-4.124H3.064v2.59A9.998 9.998 0 0 0 12 22z"
+        fill="#34A853"
+      />
+      <path
+        d="M6.402 13.898A6.005 6.005 0 0 1 6.09 12c0-.66.114-1.298.313-1.898V7.512H3.064A9.997 9.997 0 0 0 2 12c0 1.615.386 3.142 1.064 4.488l3.338-2.59z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M12 5.978c1.47 0 2.788.506 3.825 1.498l2.867-2.867C16.96 2.99 14.696 2 12 2A9.998 9.998 0 0 0 3.064 7.512l3.338 2.59C7.19 7.738 9.395 5.978 12 5.978z"
+        fill="#EA4335"
+      />
+    </svg>
   );
 }
 

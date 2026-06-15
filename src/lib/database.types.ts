@@ -25,6 +25,17 @@ export type UserRole = {
   updated_at: string;
 };
 
+export type CaptainTeam = {
+  id: string;
+  name: string;
+  logo_url: string | null;
+  logo_path: string | null;
+  captain_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Match = {
   id: string;
   title: string;
@@ -118,6 +129,11 @@ export type Database = {
         Row: UserRole;
         Insert: Pick<UserRole, "user_id"> & Partial<Omit<UserRole, "user_id">>;
         Update: Partial<UserRole>;
+      };
+      captain_teams: {
+        Row: CaptainTeam;
+        Insert: Pick<CaptainTeam, "name"> & Partial<Omit<CaptainTeam, "id" | "name" | "created_at" | "updated_at">>;
+        Update: Partial<CaptainTeam>;
       };
       matches: {
         Row: Match;
