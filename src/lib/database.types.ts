@@ -1,4 +1,4 @@
-export type AppRole = "player" | "captain" | "admin";
+export type AppRole = "player" | "captain" | "umpire" | "admin";
 export type MatchStatus = "setup" | "live" | "completed";
 export type TeamKey = "a" | "b";
 export type WinnerTeam = "a" | "b" | "tie";

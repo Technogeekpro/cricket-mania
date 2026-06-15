@@ -1,8 +1,13 @@
 import {
   Activity,
+  ArrowLeftRight,
   Camera,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   ClipboardList,
+  Coins,
+  Crown,
   Flag,
   Gauge,
   LogOut,
@@ -369,11 +374,13 @@ export function App() {
   );
 
   const isAdmin = role === "admin";
+  const isUmpire = role === "umpire";
+  const isOfficial = isAdmin || isUmpire;
   const isCaptain = role === "captain";
   const captainTeamKey =
     activeMatch?.captain_a_id === session?.user.id ? "a" : activeMatch?.captain_b_id === session?.user.id ? "b" : null;
   const ownedCaptainTeam = captainTeams.find((team) => team.captain_id === session?.user.id) ?? null;
-  const showTeamTab = !isAdmin && (isCaptain || Boolean(captainTeamKey));
+  const showTeamTab = !isOfficial && (isCaptain || Boolean(captainTeamKey));
 
   useEffect(() => {
     let mounted = true;
@@ -527,7 +534,7 @@ export function App() {
   }, [activeMatch?.id]);
 
   useEffect(() => {
-    if ((tab === "umpire" || tab === "manage") && !isAdmin) {
+    if ((tab === "umpire" || tab === "manage") && !isOfficial) {
       setTab("scoreboard");
       return;
     }
@@ -535,17 +542,17 @@ export function App() {
       setTab("scoreboard");
       return;
     }
-    if (tab === "players" && isAdmin) {
+    if ((tab === "players" || tab === "scoreboard") && isOfficial) {
       setTab("umpire");
     }
-  }, [isAdmin, showTeamTab, tab]);
+  }, [isOfficial, showTeamTab, tab]);
 
   useEffect(() => {
-    if (isAdmin && tab === "scoreboard") {
+    if (isOfficial && tab === "scoreboard") {
       setTab("umpire");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [isOfficial]);
 
   async function loadAppData(userId: string) {
     setBusy(true);
@@ -587,10 +594,10 @@ export function App() {
       const assignedAsCaptain = loadedMatches.some(
         (match) => match.captain_a_id === userId || match.captain_b_id === userId,
       );
-      if (roleData?.role === "admin" || roleData?.role === "captain" || assignedAsCaptain) {
+      const privileged =
+        roleData?.role === "admin" || roleData?.role === "umpire" || roleData?.role === "captain" || assignedAsCaptain;
+      if (privileged) {
         await loadPlayerProfiles(roleData?.role === "admin");
-      }
-      if (roleData?.role === "admin" || roleData?.role === "captain" || assignedAsCaptain) {
         await loadCaptainTeams();
       }
     } finally {
@@ -895,47 +902,45 @@ export function App() {
   }
 
   async function createMatch(formData: FormData) {
-    if (!session?.user || !isAdmin) {
+    if (!session?.user || !isOfficial) {
       return;
     }
 
-    const title = String(formData.get("title") ?? "Turf Match").trim() || "Turf Match";
-    const venue = String(formData.get("venue") ?? "Local Turf").trim() || "Local Turf";
     const teamSize = Number(formData.get("teamSize") ?? 6);
     const totalOvers = Math.max(1, Math.min(50, Math.round(Number(formData.get("totalOvers") ?? 6) || 6)));
     const teamAId = String(formData.get("teamAId") ?? "");
     const teamBId = String(formData.get("teamBId") ?? "");
     const tossWinner: TeamKey = String(formData.get("tossWinner") ?? "a") === "b" ? "b" : "a";
-    const teamA = captainTeams.find((team) => team.id === teamAId && team.captain_id);
-    const teamB = captainTeams.find((team) => team.id === teamBId && team.captain_id);
+    // Captain teams are optional now — when left blank we spin up plain Team A / Team B
+    // and the umpire builds the squads + picks captains afterwards.
+    const teamA = captainTeams.find((team) => team.id === teamAId && team.captain_id) ?? null;
+    const teamB = captainTeams.find((team) => team.id === teamBId && team.captain_id) ?? null;
 
-    if (!teamA || !teamB) {
-      setNotice("Choose two captain-created teams.");
-      return;
-    }
-
-    if (teamA.id === teamB.id || teamA.captain_id === teamB.captain_id) {
+    if (teamA && teamB && (teamA.id === teamB.id || teamA.captain_id === teamB.captain_id)) {
       setNotice("Choose two different teams.");
       return;
     }
+
+    const title =
+      String(formData.get("title") ?? "").trim() || `Match #${matches.length + 1}`;
 
     setBusy(true);
     const { data, error } = await supabase
       .from("matches")
       .insert({
         title,
-        venue,
+        venue: "Local Turf",
         team_size: teamSize,
         status: "setup",
         total_overs: totalOvers,
-        captain_a_id: teamA.captain_id,
-        captain_b_id: teamB.captain_id,
-        team_a_name: teamA.name,
-        team_b_name: teamB.name,
-        team_a_logo_url: teamA.logo_url,
-        team_b_logo_url: teamB.logo_url,
-        team_a_logo_path: teamA.logo_path,
-        team_b_logo_path: teamB.logo_path,
+        captain_a_id: teamA?.captain_id ?? null,
+        captain_b_id: teamB?.captain_id ?? null,
+        team_a_name: teamA?.name ?? "Team A",
+        team_b_name: teamB?.name ?? "Team B",
+        team_a_logo_url: teamA?.logo_url ?? null,
+        team_b_logo_url: teamB?.logo_url ?? null,
+        team_a_logo_path: teamA?.logo_path ?? null,
+        team_b_logo_path: teamB?.logo_path ?? null,
         toss_winner: tossWinner,
         draft_turn: tossWinner,
         first_batting_team: tossWinner,
@@ -955,22 +960,30 @@ export function App() {
 
     setActiveMatchId(data.id);
 
+    // Seed captain rows only for captain-created teams that were chosen.
     const captainRows = [
-      { profile: profiles.find((item) => item.id === teamA.captain_id), team: teamA, team_key: "a" as const },
-      { profile: profiles.find((item) => item.id === teamB.captain_id), team: teamB, team_key: "b" as const },
-    ].map(({ profile, team, team_key }) => ({
-      match_id: data.id,
-      profile_id: profile?.id ?? team.captain_id,
-      display_name: profile?.display_name ?? `${team.name} Captain`,
-      team_key,
-      is_captain: true,
-      skills: profile?.skills ?? [],
-      avatar_url: profile?.avatar_url ?? null,
-    }));
+      { team: teamA, team_key: "a" as const },
+      { team: teamB, team_key: "b" as const },
+    ]
+      .filter((item): item is { team: CaptainTeam; team_key: TeamKey } => Boolean(item.team?.captain_id))
+      .map(({ team, team_key }) => {
+        const captainProfile = profiles.find((item) => item.id === team.captain_id);
+        return {
+          match_id: data.id,
+          profile_id: captainProfile?.id ?? team.captain_id,
+          display_name: captainProfile?.display_name ?? `${team.name} Captain`,
+          team_key,
+          is_captain: true,
+          skills: captainProfile?.skills ?? [],
+          avatar_url: captainProfile?.avatar_url ?? null,
+        };
+      });
 
-    const { error: playerError } = await supabase.from("match_players").insert(captainRows);
-    if (playerError) {
-      setNotice(playerError.message);
+    if (captainRows.length > 0) {
+      const { error: playerError } = await supabase.from("match_players").insert(captainRows);
+      if (playerError) {
+        setNotice(playerError.message);
+      }
     }
 
     await loadMatches();
@@ -978,13 +991,13 @@ export function App() {
     const pushError = await notifyMatchCreated(data.id);
     setNotice(
       pushError
-        ? `Match created. ${teamLabel(tossWinner, data as Match)} picks first. Push failed: ${pushError}`
-        : `Match created. ${teamLabel(tossWinner, data as Match)} picks first. Players notified.`,
+        ? `${title} created. Build the squads below. Push failed: ${pushError}`
+        : `${title} created. Build the squads below.`,
     );
   }
 
   async function setCrease(values: { striker_id?: string | null; non_striker_id?: string | null; bowler_id?: string | null }) {
-    if (!activeMatch || !isAdmin) {
+    if (!activeMatch || !isOfficial) {
       return;
     }
 
@@ -1009,7 +1022,7 @@ export function App() {
   }
 
   async function scoreDelivery(runs: number, options: { extra?: ExtraType; wicket?: boolean } = {}) {
-    if (!activeMatch || !session?.user || !isAdmin) {
+    if (!activeMatch || !session?.user || !isOfficial) {
       return;
     }
 
@@ -1032,7 +1045,7 @@ export function App() {
   }
 
   async function undoLastDelivery() {
-    if (!activeMatch || !isAdmin) {
+    if (!activeMatch || !isOfficial) {
       return;
     }
 
@@ -1053,7 +1066,7 @@ export function App() {
   }
 
   async function endInnings() {
-    if (!activeMatch || !isAdmin) {
+    if (!activeMatch || !isOfficial) {
       return;
     }
 
@@ -1097,7 +1110,7 @@ export function App() {
   }
 
   async function finishMatch() {
-    if (!activeMatch || !isAdmin) {
+    if (!activeMatch || !isOfficial) {
       return;
     }
 
@@ -1140,7 +1153,7 @@ export function App() {
   }
 
   async function resetScore() {
-    if (!activeMatch || !isAdmin) {
+    if (!activeMatch || !isOfficial) {
       return;
     }
 
@@ -1194,6 +1207,173 @@ export function App() {
 
     haptic(12);
     await Promise.all([loadMatches(), loadDeliveries(activeMatch.id), loadMatchPlayers(activeMatch.id)]);
+  }
+
+  async function moveTeamPlayer(rowId: string, toTeam: TeamKey) {
+    if (!activeMatch || !isOfficial) {
+      return;
+    }
+
+    const row = matchPlayers.find((item) => item.id === rowId);
+    if (!row || row.team_key === toTeam) {
+      return;
+    }
+
+    setBusy(true);
+    // Captaincy belongs to the old team, so drop it when a player switches sides.
+    const { error } = await supabase
+      .from("match_players")
+      .update({ team_key: toTeam, is_captain: false })
+      .eq("id", rowId);
+
+    if (!error) {
+      const clear: Partial<Match> = {};
+      if (activeMatch.striker_id === rowId) {
+        clear.striker_id = null;
+        clear.striker_name = null;
+      }
+      if (activeMatch.non_striker_id === rowId) {
+        clear.non_striker_id = null;
+        clear.non_striker_name = null;
+      }
+      if (activeMatch.bowler_id === rowId) {
+        clear.bowler_id = null;
+        clear.bowler_name = null;
+      }
+      if (row.is_captain && activeMatch.captain_a_id === row.profile_id) clear.captain_a_id = null;
+      if (row.is_captain && activeMatch.captain_b_id === row.profile_id) clear.captain_b_id = null;
+      if (Object.keys(clear).length > 0) {
+        await supabase.from("matches").update(clear).eq("id", activeMatch.id);
+      }
+    }
+
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to move player."));
+      return;
+    }
+
+    haptic(12);
+    setNotice(`${row.display_name} moved to ${teamLabel(toTeam, activeMatch)}.`);
+    await Promise.all([loadMatches(), loadMatchPlayers(activeMatch.id)]);
+  }
+
+  async function addMatchPlayer(profileId: string, teamKey: TeamKey) {
+    if (!activeMatch || !isOfficial) {
+      return;
+    }
+    const player = profiles.find((item) => item.id === profileId);
+    if (!player) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.from("match_players").insert({
+      match_id: activeMatch.id,
+      profile_id: player.id,
+      display_name: player.display_name,
+      team_key: teamKey,
+      is_captain: false,
+      skills: player.skills,
+      avatar_url: player.avatar_url,
+    });
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to add player."));
+      return;
+    }
+
+    haptic(10);
+    await loadMatchPlayers(activeMatch.id);
+  }
+
+  async function removeMatchPlayer(rowId: string) {
+    if (!activeMatch || !isOfficial) {
+      return;
+    }
+    const row = matchPlayers.find((item) => item.id === rowId);
+    if (!row) {
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.from("match_players").delete().eq("id", rowId);
+
+    if (!error) {
+      const clear: Partial<Match> = {};
+      if (activeMatch.striker_id === rowId) {
+        clear.striker_id = null;
+        clear.striker_name = null;
+      }
+      if (activeMatch.non_striker_id === rowId) {
+        clear.non_striker_id = null;
+        clear.non_striker_name = null;
+      }
+      if (activeMatch.bowler_id === rowId) {
+        clear.bowler_id = null;
+        clear.bowler_name = null;
+      }
+      if (row.is_captain && activeMatch.captain_a_id === row.profile_id) clear.captain_a_id = null;
+      if (row.is_captain && activeMatch.captain_b_id === row.profile_id) clear.captain_b_id = null;
+      if (Object.keys(clear).length > 0) {
+        await supabase.from("matches").update(clear).eq("id", activeMatch.id);
+      }
+    }
+
+    setBusy(false);
+
+    if (error) {
+      setNotice(formatErrorMessage(error, "Unable to remove player."));
+      return;
+    }
+
+    haptic(10);
+    await Promise.all([loadMatches(), loadMatchPlayers(activeMatch.id)]);
+  }
+
+  async function setTeamCaptain(rowId: string, teamKey: TeamKey) {
+    if (!activeMatch || !isOfficial) {
+      return;
+    }
+    const row = matchPlayers.find((item) => item.id === rowId);
+    if (!row) {
+      return;
+    }
+
+    const makeCaptain = !row.is_captain;
+    const captainField = teamKey === "a" ? "captain_a_id" : "captain_b_id";
+
+    setBusy(true);
+    // Only one captain per team — clear the team first, then set the chosen player.
+    const { error: clearError } = await supabase
+      .from("match_players")
+      .update({ is_captain: false })
+      .eq("match_id", activeMatch.id)
+      .eq("team_key", teamKey);
+
+    let setError = clearError;
+    if (!setError && makeCaptain) {
+      const { error } = await supabase.from("match_players").update({ is_captain: true }).eq("id", rowId);
+      setError = error;
+    }
+    if (!setError) {
+      const { error } = await supabase
+        .from("matches")
+        .update({ [captainField]: makeCaptain ? row.profile_id : null })
+        .eq("id", activeMatch.id);
+      setError = error;
+    }
+    setBusy(false);
+
+    if (setError) {
+      setNotice(formatErrorMessage(setError, "Unable to set captain."));
+      return;
+    }
+
+    haptic(12);
+    await Promise.all([loadMatches(), loadMatchPlayers(activeMatch.id)]);
   }
 
   async function claimTeam(teamKey: TeamKey) {
@@ -1511,7 +1691,7 @@ export function App() {
             </button>
           )}
 
-          {tab === "scoreboard" && !isAdmin && (
+          {tab === "scoreboard" && !isOfficial && (
             <ScoreboardView
               match={activeMatch}
               deliveries={deliveries}
@@ -1522,7 +1702,7 @@ export function App() {
             />
           )}
 
-          {tab === "players" && !isAdmin && (
+          {tab === "players" && !isOfficial && (
             <PlayerView
               profile={profile}
               role={role}
@@ -1559,7 +1739,7 @@ export function App() {
             />
           )}
 
-          {tab === "umpire" && isAdmin && (
+          {tab === "umpire" && isOfficial && (
             <UmpireView
               busy={busy}
               match={activeMatch}
@@ -1575,12 +1755,15 @@ export function App() {
             />
           )}
 
-          {tab === "manage" && isAdmin && (
+          {tab === "manage" && isOfficial && (
             <ManageView
               busy={busy}
+              isAdmin={isAdmin}
               match={activeMatch}
+              matchCount={matches.length}
               profiles={profiles}
               roles={roles}
+              matchPlayers={matchPlayers}
               captainTeams={captainTeams}
               currentUserId={session.user.id}
               onCreateMatch={createMatch}
@@ -1588,13 +1771,17 @@ export function App() {
               onToggleBan={updateProfileBan}
               onRefreshPlayers={loadAdminLists}
               onResetAll={resetAllData}
+              onAddPlayer={addMatchPlayer}
+              onMovePlayer={moveTeamPlayer}
+              onRemovePlayer={removeMatchPlayer}
+              onSetCaptain={setTeamCaptain}
               onGoToUmpire={() => setTab("umpire")}
             />
           )}
         </div>
 
         <nav className="bottom-nav sticky-bottom" aria-label="Primary">
-          {!isAdmin && (
+          {!isOfficial && (
             <NavButton
               icon={<Trophy size={22} />}
               label="Score"
@@ -1602,7 +1789,7 @@ export function App() {
               onClick={() => setTab("scoreboard")}
             />
           )}
-          {!isAdmin && (
+          {!isOfficial && (
             <NavButton
               icon={<Users size={22} />}
               label="Profile"
@@ -1618,7 +1805,7 @@ export function App() {
               onClick={() => setTab("team")}
             />
           )}
-          {isAdmin && (
+          {isOfficial && (
             <NavButton
               icon={<Gauge size={22} />}
               label="Umpire"
@@ -1626,7 +1813,7 @@ export function App() {
               onClick={() => setTab("umpire")}
             />
           )}
-          {isAdmin && (
+          {isOfficial && (
             <NavButton
               icon={<Shield size={22} />}
               label="Manage"
@@ -2032,28 +2219,58 @@ function TeamBadge({ match, teamKey }: { match: Match; teamKey: TeamKey }) {
 }
 
 function PlayerRankings({ players, match }: { players: MatchPlayer[]; match: Match }) {
+  const prevRanksRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    const next = new Map<string, number>();
+    players.forEach((player, index) => next.set(player.id, index));
+    prevRanksRef.current = next;
+  });
+
   if (players.length === 0) {
     return <p className="empty-note">No player stats yet.</p>;
   }
 
   return (
-    <div className="ranking-list">
-      {players.map((player, index) => (
-        <article className="ranking-row" key={player.id}>
-          <span className="rank-number">#{index + 1}</span>
-          <MatchPlayerPhoto player={player} />
-          <div className="ranking-main">
-            <strong>{player.display_name}</strong>
-            <small>{teamLabel(player.team_key === "b" ? "b" : "a", match)}</small>
-          </div>
-          <div className="ranking-stats">
-            <strong>{playerImpact(player)}</strong>
-            <small>
-              {player.runs_scored}R · {player.wickets_taken}W · SR {formatRate(strikeRate(player.runs_scored, player.balls_faced))}
-            </small>
-          </div>
-        </article>
-      ))}
+    <div className="leaderboard">
+      {players.map((player, index) => {
+        const rank = index + 1;
+        const prev = prevRanksRef.current.get(player.id);
+        const trend = prev === undefined ? "new" : prev > index ? "up" : prev < index ? "down" : "same";
+        const tier = rank === 1 ? "gold" : rank === 2 ? "silver" : rank === 3 ? "bronze" : "";
+        const points = playerImpact(player);
+        return (
+          <article
+            className={`lb-row ${tier}`.trim()}
+            key={player.id}
+            style={{ animationDelay: `${Math.min(index, 9) * 45}ms` } as CSSProperties}
+          >
+            <MatchPlayerPhoto player={player} />
+            <div className="lb-main">
+              <strong>{player.display_name}</strong>
+              <small>
+                {player.runs_scored}R · {player.wickets_taken}W · SR{" "}
+                {formatRate(strikeRate(player.runs_scored, player.balls_faced))}
+              </small>
+            </div>
+            <div className="lb-end">
+              <div className="lb-points">
+                <strong key={points}>{points}</strong>
+                <small>pts</small>
+              </div>
+              <div className="lb-rank">
+                {rank === 1 && <Crown className="lb-crown" size={15} aria-hidden="true" />}
+                <span className="lb-rank-num">#{rank}</span>
+                <span className={`lb-trend ${trend}`} aria-label={`Trend ${trend}`}>
+                  {trend === "up" && <ChevronUp size={13} />}
+                  {trend === "down" && <ChevronDown size={13} />}
+                  {(trend === "same" || trend === "new") && <i className="lb-dot" />}
+                </span>
+              </div>
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -2809,8 +3026,20 @@ function UmpireView({
       </div>
 
       <div className="score-hero">
+        {!isCompleted && (
+          <button
+            type="button"
+            className="score-hero-undo"
+            disabled={busy || deliveries.length === 0}
+            onClick={onUndo}
+            aria-label="Undo last ball"
+          >
+            <RotateCcw size={12} />
+            Undo
+          </button>
+        )}
         <span>{match.title}</span>
-        <strong>
+        <strong key={`${match.runs}-${match.wickets}`}>
           {match.runs}/{match.wickets}
         </strong>
         <small>
@@ -2847,6 +3076,7 @@ function UmpireView({
         <LiveScoring
           busy={busy}
           match={match}
+          deliveries={deliveries}
           matchPlayers={matchPlayers}
           onScore={onScore}
           onUndo={onUndo}
@@ -2872,11 +3102,122 @@ function UmpireView({
   );
 }
 
-function ManageView({
+function SquadManager({
   busy,
   match,
+  matchPlayers,
+  profiles,
+  onAddPlayer,
+  onMovePlayer,
+  onRemovePlayer,
+  onSetCaptain,
+}: {
+  busy: boolean;
+  match: Match;
+  matchPlayers: MatchPlayer[];
+  profiles: Profile[];
+  onAddPlayer: (profileId: string, teamKey: TeamKey) => void;
+  onMovePlayer: (rowId: string, toTeam: TeamKey) => void;
+  onRemovePlayer: (rowId: string) => void;
+  onSetCaptain: (rowId: string, teamKey: TeamKey) => void;
+}) {
+  const inMatch = new Set(matchPlayers.map((p) => p.profile_id).filter(Boolean) as string[]);
+  const available = profiles.filter((p) => !inMatch.has(p.id) && !p.is_banned);
+  const teams: { key: TeamKey; players: MatchPlayer[] }[] = [
+    { key: "a", players: matchPlayers.filter((p) => p.team_key === "a") },
+    { key: "b", players: matchPlayers.filter((p) => p.team_key === "b") },
+  ];
+
+  return (
+    <section className="panel">
+      <div className="panel-title">
+        <h3>Squads</h3>
+        <span>Build teams &amp; pick captains</span>
+      </div>
+
+      <div className="squad-stack">
+        {teams.map(({ key, players }) => (
+          <div className="squad-team" key={key}>
+            <div className="squad-team-head">
+              <span>{teamLabel(key, match)}</span>
+              <small>
+                {players.length}/{match.team_size}
+              </small>
+            </div>
+
+            {players.map((player) => (
+              <div className={`squad-player ${player.is_captain ? "is-captain" : ""}`} key={player.id}>
+                <button
+                  type="button"
+                  className={`cap-toggle ${player.is_captain ? "active" : ""}`}
+                  disabled={busy}
+                  aria-pressed={player.is_captain}
+                  title={player.is_captain ? "Captain — tap to remove" : "Make captain"}
+                  onClick={() => onSetCaptain(player.id, key)}
+                >
+                  C
+                </button>
+                <MatchPlayerPhoto player={player} />
+                <span className="squad-player-name">{player.display_name}</span>
+                <button
+                  type="button"
+                  className="squad-icon-btn"
+                  disabled={busy}
+                  title={`Move to ${teamLabel(otherTeam(key), match)}`}
+                  onClick={() => onMovePlayer(player.id, otherTeam(key))}
+                >
+                  <ArrowLeftRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="squad-icon-btn danger"
+                  disabled={busy}
+                  title="Remove from match"
+                  onClick={() => onRemovePlayer(player.id)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+
+            {players.length === 0 && <p className="empty-note">No players yet. Add from below.</p>}
+
+            <select
+              className="squad-add"
+              value=""
+              disabled={busy || available.length === 0 || players.length >= match.team_size}
+              onChange={(event) => {
+                if (event.target.value) onAddPlayer(event.target.value, key);
+              }}
+            >
+              <option value="">
+                {players.length >= match.team_size
+                  ? "Team full"
+                  : available.length === 0
+                    ? "No players left"
+                    : `+ Add to ${teamLabel(key, match)}`}
+              </option>
+              {available.map((player) => (
+                <option value={player.id} key={player.id}>
+                  {player.display_name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ManageView({
+  busy,
+  isAdmin,
+  match,
+  matchCount,
   profiles,
   roles,
+  matchPlayers,
   captainTeams,
   currentUserId,
   onCreateMatch,
@@ -2884,12 +3225,19 @@ function ManageView({
   onToggleBan,
   onRefreshPlayers,
   onResetAll,
+  onAddPlayer,
+  onMovePlayer,
+  onRemovePlayer,
+  onSetCaptain,
   onGoToUmpire,
 }: {
   busy: boolean;
+  isAdmin: boolean;
   match: Match | null;
+  matchCount: number;
   profiles: Profile[];
   roles: UserRole[];
+  matchPlayers: MatchPlayer[];
   captainTeams: CaptainTeam[];
   currentUserId: string;
   onCreateMatch: (formData: FormData) => void;
@@ -2897,6 +3245,10 @@ function ManageView({
   onToggleBan: (profileId: string, banned: boolean) => void;
   onRefreshPlayers: () => void;
   onResetAll: () => void;
+  onAddPlayer: (profileId: string, teamKey: TeamKey) => void;
+  onMovePlayer: (rowId: string, toTeam: TeamKey) => void;
+  onRemovePlayer: (rowId: string) => void;
+  onSetCaptain: (rowId: string, teamKey: TeamKey) => void;
   onGoToUmpire: () => void;
 }) {
   const roleMap = new Map(roles.map((item) => [item.user_id, item.role]));
@@ -2905,14 +3257,16 @@ function ManageView({
   const activeCaptainTeams = captainTeams.filter((team) => team.captain_id);
   const [selectedTeamAId, setSelectedTeamAId] = useState("");
   const [selectedTeamBId, setSelectedTeamBId] = useState("");
+  const [tossWinner, setTossWinner] = useState<TeamKey>("a");
+  const [coinTossOpen, setCoinTossOpen] = useState(false);
   const matchInProgress = match !== null && match.status !== "completed";
   const showCreateForm = !matchInProgress || showNewMatch;
   const selectedProfile = profiles.find((item) => item.id === selectedProfileId) ?? null;
-  const teamA = activeCaptainTeams.find((team) => team.id === selectedTeamAId) ?? activeCaptainTeams[0] ?? null;
-  const teamB =
-    activeCaptainTeams.find((team) => team.id === selectedTeamBId && team.id !== teamA?.id) ??
-    activeCaptainTeams.find((team) => team.id !== teamA?.id) ??
-    null;
+  // Captain teams are optional; blank selection means a plain Team A / Team B.
+  const teamA = activeCaptainTeams.find((team) => team.id === selectedTeamAId) ?? null;
+  const teamB = activeCaptainTeams.find((team) => team.id === selectedTeamBId && team.id !== teamA?.id) ?? null;
+  const teamAName = teamA?.name ?? "Team A";
+  const teamBName = teamB?.name ?? "Team B";
 
   if (selectedProfile) {
     return (
@@ -2956,13 +3310,12 @@ function ManageView({
         >
           <div className="panel-title">
             <h3>{matchInProgress ? "Start another match" : "Create match"}</h3>
-            <span>Admin</span>
+            <span>Quick setup</span>
           </div>
-          {activeCaptainTeams.length < 2 && (
-            <p className="empty-note">At least two captains need to create teams before an admin can create a match.</p>
-          )}
-          <input name="title" placeholder="Sunday Turf Match" />
-          <input name="venue" placeholder="Local Turf" />
+          <label className="field">
+            <span>Match name</span>
+            <input name="title" defaultValue={`Match #${matchCount + 1}`} placeholder={`Match #${matchCount + 1}`} />
+          </label>
           <div className="split-inputs">
             <label className="field">
               <span>First team</span>
@@ -2971,7 +3324,7 @@ function ManageView({
                 value={teamA?.id ?? ""}
                 onChange={(event) => setSelectedTeamAId(event.target.value)}
               >
-                <option value="">Select team</option>
+                <option value="">Team A</option>
                 {activeCaptainTeams.map((team) => (
                   <option value={team.id} key={team.id} disabled={team.id === teamB?.id}>
                     {team.name}
@@ -2986,7 +3339,7 @@ function ManageView({
                 value={teamB?.id ?? ""}
                 onChange={(event) => setSelectedTeamBId(event.target.value)}
               >
-                <option value="">Select team</option>
+                <option value="">Team B</option>
                 {activeCaptainTeams.map((team) => (
                   <option value={team.id} key={team.id} disabled={team.id === teamA?.id}>
                     {team.name}
@@ -3013,13 +3366,28 @@ function ManageView({
           </div>
           <label className="field">
             <span>Toss winner / first pick</span>
-            <select name="tossWinner" defaultValue="a">
-              <option value="a">{teamA?.name ?? "First team"}</option>
-              <option value="b">{teamB?.name ?? "Second team"}</option>
+            <select
+              name="tossWinner"
+              value={tossWinner}
+              onChange={(event) => setTossWinner(event.target.value === "b" ? "b" : "a")}
+            >
+              <option value="a">{teamAName}</option>
+              <option value="b">{teamBName}</option>
             </select>
           </label>
+          <button
+            type="button"
+            className="coin-toss-launch"
+            onClick={() => {
+              haptic(14);
+              setCoinTossOpen(true);
+            }}
+          >
+            <Coins size={18} />
+            Flip a coin to decide
+          </button>
           <div className="dual-actions">
-            <button type="submit" className="primary-action" disabled={busy || activeCaptainTeams.length < 2}>
+            <button type="submit" className="primary-action" disabled={busy}>
               <Plus size={19} />
               Create match
             </button>
@@ -3037,47 +3405,201 @@ function ManageView({
         </button>
       )}
 
-      <section className="panel">
-        <div className="panel-title">
-          <h3>Player accounts</h3>
-          <button className="tiny-action" onClick={onRefreshPlayers}>
-            Refresh
-          </button>
-        </div>
-        <div className="admin-player-list">
-          {profiles.map((player) => (
-            <PlayerAdminTile
-              key={player.id}
-              profile={player}
-              role={roleMap.get(player.id) ?? "player"}
-              onMore={() => setSelectedProfileId(player.id)}
-            />
-          ))}
-          {profiles.length === 0 && <p className="empty-note">No player accounts yet.</p>}
-        </div>
-      </section>
+      {match && (
+        <SquadManager
+          busy={busy}
+          match={match}
+          matchPlayers={matchPlayers}
+          profiles={profiles}
+          onAddPlayer={onAddPlayer}
+          onMovePlayer={onMovePlayer}
+          onRemovePlayer={onRemovePlayer}
+          onSetCaptain={onSetCaptain}
+        />
+      )}
 
-      <section className="panel danger-zone">
-        <div className="panel-title">
-          <h3>Danger zone</h3>
-          <span>Irreversible</span>
-        </div>
-        <p className="empty-note">
-          Wipe every match, scoreboard, delivery, and team squad. Player accounts, roles, and
-          profile photos are kept.
-        </p>
-        <button className="secondary-action danger-soft" disabled={busy} onClick={onResetAll}>
-          <RotateCcw size={16} />
-          Reset all match data
-        </button>
-      </section>
+      {isAdmin && (
+        <section className="panel">
+          <div className="panel-title">
+            <h3>Player accounts</h3>
+            <button className="tiny-action" onClick={onRefreshPlayers}>
+              Refresh
+            </button>
+          </div>
+          <div className="admin-player-list">
+            {profiles.map((player) => (
+              <PlayerAdminTile
+                key={player.id}
+                profile={player}
+                role={roleMap.get(player.id) ?? "player"}
+                onMore={() => setSelectedProfileId(player.id)}
+              />
+            ))}
+            {profiles.length === 0 && <p className="empty-note">No player accounts yet.</p>}
+          </div>
+        </section>
+      )}
+
+      {isAdmin && (
+        <section className="panel danger-zone">
+          <div className="panel-title">
+            <h3>Danger zone</h3>
+            <span>Irreversible</span>
+          </div>
+          <p className="empty-note">
+            Wipe every match, scoreboard, delivery, and team squad. Player accounts, roles, and
+            profile photos are kept.
+          </p>
+          <button className="secondary-action danger-soft" disabled={busy} onClick={onResetAll}>
+            <RotateCcw size={16} />
+            Reset all match data
+          </button>
+        </section>
+      )}
+
+      {coinTossOpen && (
+        <CoinTossModal
+          teamAName={teamAName}
+          teamBName={teamBName}
+          onApply={(winner) => {
+            setTossWinner(winner);
+            setCoinTossOpen(false);
+            setShowNewMatch(true);
+          }}
+          onClose={() => setCoinTossOpen(false)}
+        />
+      )}
     </section>
+  );
+}
+
+function CoinTossModal({
+  teamAName,
+  teamBName,
+  onApply,
+  onClose,
+}: {
+  teamAName: string;
+  teamBName: string;
+  onApply: (winner: TeamKey) => void;
+  onClose: () => void;
+}) {
+  type CoinFace = "heads" | "tails";
+  const [phase, setPhase] = useState<"call" | "flipping" | "result">("call");
+  const [call, setCall] = useState<CoinFace | null>(null);
+  const [landed, setLanded] = useState<CoinFace | null>(null);
+  const [rotation, setRotation] = useState(0);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
+  const winner: TeamKey | null = !call || !landed ? null : call === landed ? "a" : "b";
+
+  function flip(side: CoinFace) {
+    const result: CoinFace = Math.random() < 0.5 ? "heads" : "tails";
+    const spins = 6;
+    const targetMod = result === "tails" ? 180 : 0;
+    const currentMod = ((rotation % 360) + 360) % 360;
+    const delta = spins * 360 + ((targetMod - currentMod + 360) % 360);
+
+    setCall(side);
+    setLanded(result);
+    setPhase("flipping");
+    setRotation((current) => current + delta);
+    haptic([20, 50, 20, 50, 20, 50, 30, 70]);
+
+    timerRef.current = window.setTimeout(() => {
+      setPhase("result");
+      haptic([60, 40, 140]);
+    }, 2300);
+  }
+
+  function reset() {
+    setPhase("call");
+    setCall(null);
+    setLanded(null);
+  }
+
+  return (
+    <div className="coin-toss" role="dialog" aria-label="Coin toss">
+      <header className="coin-toss-header">
+        <button className="icon-button dark" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        <span>Coin toss</span>
+        <span className="coin-toss-spacer" aria-hidden="true" />
+      </header>
+
+      <div className="coin-toss-body">
+        <p className="coin-toss-caller">
+          <strong>{teamAName}</strong> to call · winner picks first
+        </p>
+
+        <div className={`coin-stage ${phase === "flipping" ? "is-flipping" : ""}`}>
+          <div className="coin" style={{ transform: `rotateX(${rotation}deg)` }}>
+            <div className="coin-face coin-heads">
+              <span>H</span>
+              <small>Heads</small>
+            </div>
+            <div className="coin-face coin-tails">
+              <span>T</span>
+              <small>Tails</small>
+            </div>
+          </div>
+          <div className="coin-shadow" aria-hidden="true" />
+        </div>
+
+        {phase === "call" && (
+          <div className="coin-call">
+            <p className="coin-toss-prompt">Make the call</p>
+            <div className="coin-call-buttons">
+              <button className="coin-call-btn" onClick={() => flip("heads")}>
+                Heads
+              </button>
+              <button className="coin-call-btn" onClick={() => flip("tails")}>
+                Tails
+              </button>
+            </div>
+          </div>
+        )}
+
+        {phase === "flipping" && <p className="coin-toss-status">Flipping…</p>}
+
+        {phase === "result" && landed && winner && (
+          <div className="coin-result">
+            <p className="coin-result-landed">
+              Called <strong>{call}</strong> · landed <strong>{landed}</strong>
+            </p>
+            <h2 className="coin-result-winner">
+              {winner === "a" ? teamAName : teamBName} won the toss
+            </h2>
+            <div className="dual-actions">
+              <button className="primary-action" onClick={() => onApply(winner)}>
+                <Coins size={18} />
+                Use this result
+              </button>
+              <button className="secondary-action" onClick={reset}>
+                <RotateCcw size={16} />
+                Flip again
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
 function LiveScoring({
   busy,
   match,
+  deliveries,
   matchPlayers,
   onScore,
   onUndo,
@@ -3087,6 +3609,7 @@ function LiveScoring({
 }: {
   busy: boolean;
   match: Match;
+  deliveries: Delivery[];
   matchPlayers: MatchPlayer[];
   onScore: (runs: number, options?: { extra?: ExtraType; wicket?: boolean }) => void;
   onUndo: () => void;
@@ -3105,6 +3628,17 @@ function LiveScoring({
   const isChase = match.current_innings === 2 && match.target !== null;
   const chaseWon = isChase && match.target !== null && match.runs >= match.target;
   const canScore = creaseReady && !inningsOver && !chaseWon && match.status !== "completed";
+
+  const striker = matchPlayers.find((item) => item.id === match.striker_id) ?? null;
+  const nonStriker = matchPlayers.find((item) => item.id === match.non_striker_id) ?? null;
+  const bowler = matchPlayers.find((item) => item.id === match.bowler_id) ?? null;
+
+  const currentOverDeliveries = getCurrentOverDeliveries(deliveries, match);
+  const currentOverRuns = currentOverDeliveries.reduce((sum, d) => sum + d.runs, 0);
+  const currentOverWickets = currentOverDeliveries.filter((d) => d.wicket).length;
+  const currentOverLegal = currentOverDeliveries.filter((d) => d.legal).length;
+  const remainingSlots = Math.max(0, 6 - currentOverLegal);
+  const overNumber = Math.floor(match.legal_balls / 6) + 1;
 
   if (match.status === "completed") {
     return (
@@ -3126,16 +3660,43 @@ function LiveScoring({
 
   return (
     <>
-      <div className="scoring-status">
-        <span>Innings {match.current_innings}</span>
-        <span>{teamLabel(match.batting_team_key, match)} batting</span>
-        {isChase && <span>Target {match.target}</span>}
-      </div>
-
       {battingSquad === 0 ? (
         <p className="empty-note">Build the squads first — captains add players on the Team tab.</p>
       ) : (
         <>
+          {creaseReady && (
+            <div className="current-over">
+              <div>
+                <span className="current-over-label">This over · Over {overNumber}</span>
+                <div className="current-over-balls">
+                  {currentOverDeliveries.map((delivery) => {
+                    let cls = "over-ball";
+                    if (delivery.wicket) cls += " wicket-ball";
+                    else if (delivery.extra) cls += " extra-ball";
+                    else if (delivery.runs >= 4) cls += " boundary-ball";
+                    return (
+                      <span className={cls} key={delivery.id}>
+                        {delivery.label}
+                      </span>
+                    );
+                  })}
+                  {Array.from({ length: remainingSlots }, (_, i) => (
+                    <span className="empty-slot" key={`slot-${i}`}>
+                      ·
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="current-over-meta">
+                <strong>
+                  {currentOverRuns}
+                  {currentOverWickets > 0 ? `-${currentOverWickets}` : ""}
+                </strong>
+                <small>this over</small>
+              </div>
+            </div>
+          )}
+
           <div className="crease-selectors">
             <label className="field">
               <span>Striker</span>
@@ -3152,6 +3713,14 @@ function LiveScoring({
                   </option>
                 ))}
               </select>
+              {striker && (
+                <p className="crease-meta">
+                  <strong>
+                    {striker.runs_scored} ({striker.balls_faced})
+                  </strong>
+                  {" "}· SR {formatRate(strikeRate(striker.runs_scored, striker.balls_faced))}
+                </p>
+              )}
             </label>
             <label className="field">
               <span>Non-striker</span>
@@ -3168,6 +3737,13 @@ function LiveScoring({
                   </option>
                 ))}
               </select>
+              {nonStriker && (
+                <p className="crease-meta">
+                  <strong>
+                    {nonStriker.runs_scored} ({nonStriker.balls_faced})
+                  </strong>
+                </p>
+              )}
             </label>
             <label className="field">
               <span>Bowler</span>
@@ -3183,6 +3759,14 @@ function LiveScoring({
                   </option>
                 ))}
               </select>
+              {bowler && (
+                <p className="crease-meta">
+                  <strong>
+                    {getOvers(bowler.balls_bowled)}-{bowler.runs_conceded}-{bowler.wickets_taken}
+                  </strong>
+                  {" "}· Econ {formatRate(runRate(bowler.runs_conceded, bowler.balls_bowled))}
+                </p>
+              )}
             </label>
           </div>
 
@@ -3241,10 +3825,6 @@ function LiveScoring({
           <Flag size={18} />
           {match.current_innings === 1 ? "End innings" : "End match"}
         </button>
-        <button className="secondary-action" disabled={busy} onClick={onUndo}>
-          <RotateCcw size={18} />
-          Undo ball
-        </button>
         <button className="secondary-action danger-soft" disabled={busy} onClick={onReset}>
           <RotateCcw size={18} />
           Reset
@@ -3297,6 +3877,7 @@ function AdminProfileDetail({
 }) {
   const isSelf = profile.id === currentUserId;
   const isCaptain = role === "captain";
+  const isUmpire = role === "umpire";
 
   return (
     <section className="stack">
@@ -3332,6 +3913,14 @@ function AdminProfileDetail({
           >
             <UserCog size={18} />
             {isCaptain ? "Remove captain" : "Assign captain"}
+          </button>
+          <button
+            className="secondary-action"
+            disabled={isSelf || role === "admin" || profile.is_banned}
+            onClick={() => onUpdateRole(profile.id, isUmpire ? "player" : "umpire")}
+          >
+            <Gauge size={18} />
+            {isUmpire ? "Remove umpire" : "Make umpire"}
           </button>
           <button
             className={`secondary-action ${profile.is_banned ? "" : "danger-soft"}`}
@@ -3442,6 +4031,27 @@ function groupDeliveriesByOver(deliveries: Delivery[]): OverGroup[] {
   }
 
   return groups.reverse();
+}
+
+function getCurrentOverDeliveries(deliveries: Delivery[], match: Match): Delivery[] {
+  // deliveries arrive newest-first; we want the balls bowled since the last
+  // completed over boundary in the current innings, in chronological order.
+  const innings = match.current_innings;
+  const overStartLegals = Math.floor(match.legal_balls / 6) * 6;
+  const oldestFirst = [...deliveries]
+    .filter((d) => d.innings === innings)
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+
+  let legalsSeen = 0;
+  let startIdx = oldestFirst.length;
+  for (let i = 0; i < oldestFirst.length; i += 1) {
+    if (oldestFirst[i].legal) legalsSeen += 1;
+    if (legalsSeen > overStartLegals) {
+      startIdx = i;
+      break;
+    }
+  }
+  return oldestFirst.slice(startIdx);
 }
 
 function BallStrip({ deliveries, matchPlayers }: { deliveries: Delivery[]; matchPlayers: MatchPlayer[] }) {
