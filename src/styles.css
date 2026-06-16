@@ -551,8 +551,15 @@ textarea:focus {
   border: 1px solid var(--brand-line);
   border-radius: var(--r-md);
   color: var(--ink-invert);
-  background: linear-gradient(135deg, var(--brand-2) 0%, var(--brand) 100%);
+  background:
+    linear-gradient(180deg, rgba(5, 46, 22, 0.28), rgba(5, 46, 22, 0.5)),
+    radial-gradient(circle at 28% 24%, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0) 38%),
+    url("./assets/gully-grass-texture.jpg"),
+    linear-gradient(135deg, var(--brand-2) 0%, var(--brand) 100%);
+  background-size: auto, auto, 360px 240px, auto;
+  background-position: center, center, center, center;
   box-shadow: var(--shadow-xs);
+  overflow: hidden;
 }
 
 .score-hero > span:first-child {
@@ -630,6 +637,56 @@ textarea:focus {
   letter-spacing: 0.3px;
   color: rgba(255, 255, 255, 0.72);
   font-variant-numeric: tabular-nums;
+}
+
+.score-hero-batters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.score-hero-batter {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.score-hero-batter.active {
+  border-color: rgba(187, 247, 208, 0.35);
+  background: rgba(220, 252, 231, 0.2);
+}
+
+.score-hero-batter span {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+}
+
+.score-hero-batter strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-invert);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: none;
+}
+
+.score-hero-batter small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .rate-badges {
@@ -2304,6 +2361,14 @@ textarea:focus {
 
   .score-hero strong {
     font-size: 32px;
+  }
+
+  .score-hero-batters {
+    grid-template-columns: 1fr;
+  }
+
+  .score-hero-batter strong {
+    font-size: 12px;
   }
 
   .extras-grid,

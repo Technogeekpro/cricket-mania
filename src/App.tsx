@@ -2254,6 +2254,7 @@ function ScoreboardView({
         <small>
           {getOvers(match.legal_balls)}/{match.total_overs} overs
         </small>
+        <ScoreHeroBatters striker={striker} nonStriker={nonStriker} />
         <div className="rate-badges">
           <span className="rate-badge">
             <Gauge size={13} /> CRR {formatRate(crr)}
@@ -2574,6 +2575,40 @@ function BatterRow({ label, player, onStrike = false }: { label: string; player:
         </strong>
         <small>SR {formatRate(strikeRate(player?.runs_scored ?? 0, player?.balls_faced ?? 0))}</small>
       </div>
+    </div>
+  );
+}
+
+function ScoreHeroBatters({ striker, nonStriker }: { striker: MatchPlayer | null; nonStriker: MatchPlayer | null }) {
+  if (!striker && !nonStriker) {
+    return null;
+  }
+
+  return (
+    <div className="score-hero-batters">
+      <ScoreHeroBatter label="Striker" player={striker} active />
+      <ScoreHeroBatter label="Non-striker" player={nonStriker} />
+    </div>
+  );
+}
+
+function ScoreHeroBatter({
+  label,
+  player,
+  active = false,
+}: {
+  label: string;
+  player: MatchPlayer | null;
+  active?: boolean;
+}) {
+  return (
+    <div className={`score-hero-batter ${active ? "active" : ""}`}>
+      <span>{label}</span>
+      <strong>
+        {player ? shortPlayerName(player.display_name) : "-"}
+        {active && player ? " *" : ""}
+      </strong>
+      <small>{player ? `${player.runs_scored} (${player.balls_faced})` : "0 (0)"}</small>
     </div>
   );
 }
@@ -3293,6 +3328,8 @@ function UmpireView({
   const rrr = match.target ? requiredRunRate(match.target, match.runs, totalBalls, match.legal_balls) : 0;
   const isCompleted = match.status === "completed";
   const displayResult = matchResultNote(match);
+  const striker = matchPlayers.find((item) => item.id === match.striker_id) ?? null;
+  const nonStriker = matchPlayers.find((item) => item.id === match.non_striker_id) ?? null;
 
   if (mode === "gully") {
     return (
@@ -3347,6 +3384,7 @@ function UmpireView({
         <small>
           {getOvers(match.legal_balls)}/{match.total_overs} overs
         </small>
+        <ScoreHeroBatters striker={striker} nonStriker={nonStriker} />
         <div className="rate-badges">
           <span className="rate-badge">
             <Gauge size={13} /> CRR {formatRate(crr)}
